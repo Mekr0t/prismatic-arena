@@ -1,0 +1,227 @@
+/* Admin area — login card, panel shell, and pipeline-health panel.
+   Reuses the global token system
+   (--bg / --surface / --surface-2 / --border / --text / --text-dim / --accent). */
+
+/* ── Login ─────────────────────────────────────────────────────────────── */
+.admin-login {
+  min-height: 60vh;
+  display: grid;
+  place-items: center;
+  padding: 48px 16px;
+}
+.login-card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.login-card h1 { margin: 0; font-size: 24px; }
+.login-sub { margin: 0; font-size: 14px; color: var(--text-dim); }
+.login-error {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #ffd7cf;
+  background: rgba(217, 98, 74, 0.15);
+  border: 1px solid rgba(217, 98, 74, 0.4);
+  border-radius: 8px;
+}
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.login-field input {
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.login-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.login-btn {
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.login-btn:hover { filter: brightness(1.08); }
+
+/* ── Panel shell ───────────────────────────────────────────────────────── */
+.admin-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.admin-bar-title { font-weight: 700; letter-spacing: 0.02em; }
+.admin-bar-nav { display: flex; gap: 14px; }
+.admin-bar-nav a,
+.admin-bar-link { font-size: 14px; text-decoration: none; color: var(--text-dim); }
+.admin-bar-nav a:hover,
+.admin-bar-link:hover { color: var(--text); }
+.admin-bar-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+.admin-logout {
+  padding: 6px 12px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.admin-logout:hover { border-color: var(--text-dim); }
+.admin-main { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
+.admin-panel h1 { margin: 0 0 10px; }
+.admin-muted { font-size: 14px; line-height: 1.6; color: var(--text-dim); }
+.admin-muted code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border-radius: 4px;
+}
+
+/* ── Ops / pipeline-health panel ───────────────────────────────────────── */
+.ops { display: flex; flex-direction: column; gap: 24px; }
+.ops-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ops-head h1 { margin: 0; }
+
+.auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.auto-dot { width: 8px; height: 8px; border-radius: 50%; background: #46c0a0; }
+.auto-btn {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.auto-btn:hover { border-color: var(--text-dim); }
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.ops-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.ops-card.is-warn { border-color: rgba(217, 98, 74, 0.5); }
+.ops-label { font-size: 12px; color: var(--text-dim); }
+.ops-n {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 28px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ops-card.is-warn .ops-n { color: #e8856f; }
+
+.ops-section {
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.ops-section h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ops-empty { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-dim); }
+.ops-foot { margin: 12px 0 0; font-size: 12px; color: var(--text-dim); }
+
+.usage-chart { width: 100%; height: auto; display: block; }
+.usage-chart .baseline { stroke: var(--border); stroke-width: 1; }
+.usage-chart .bar-ok { fill: var(--accent); }
+.usage-chart .bar-err { fill: #d9624a; }
+.usage-chart .axis-label { fill: var(--text-dim); font-size: 10px; }
+
+.ops-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.ops-legend .dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.ops-legend .dot-ok { background: var(--accent); }
+.ops-legend .dot-err { background: #d9624a; }
+
+.ops-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ops-table th,
+.ops-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+.ops-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ops-table tbody tr:last-child td { border-bottom: none; }
+.ops-table .num {
+  text-align: right;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.ops-table .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+.ops-table .dim { color: var(--text-dim); }
+.ops-table .warn { color: #e8856f; }
+
+.ops-health { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.ops-health-row { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.ops-health-row .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+.ops-health-row .dim { color: var(--text-dim); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+.badge-success { color: #0e1320; background: #46c0a0; }
+.badge-failed { color: #fff; background: #d9624a; }
+.badge-running { color: #0e1320; background: var(--accent); }
+.badge-queued { color: var(--text-dim); background: var(--surface-2); }
+.badge-stale { color: #0e1320; background: #f2c14e; }

@@ -1,0 +1,16 @@
+/* Prismatic Arena design system — partial stylesheets imported in cascade order.
+   Selectors are flat and globally unique (no CSS Modules).
+   Fonts are injected as CSS variables by next/font in layout.tsx. */
+
+@import './styles/base.css';
+@import './styles/layout.css';
+@import './styles/board.css';
+@import './styles/profile.css';
+@import './styles/match.css';
+@import './styles/leaderboard.css';
+@import './styles/home.css';
+@import './styles/planner.css';
+@import './styles/library.css';
+@import './styles/popups.css';
+@import './styles/admin.css';
+@import './styles/tier.css';

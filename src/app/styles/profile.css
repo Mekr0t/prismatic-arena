@@ -1,0 +1,144 @@
+/* ── Profile header ──────────────────────────────────── */
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+}
+
+.avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  flex-shrink: 0;
+  background: linear-gradient(150deg, #243056, #161c2d);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-family: var(--display);
+  font-weight: 600;
+  color: var(--text);
+  font-size: 26px;
+  position: relative;
+}
+.avatar-icon { width: 100%; height: 100%; object-fit: cover; border-radius: 15px; }
+.avatar .lv {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-size: 10px;
+  color: var(--text);
+  font-family: var(--body);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.identity h1       { font-family: var(--display); font-weight: 600; font-size: 26px; letter-spacing: 0.01em; }
+.identity h1 .tag  { color: var(--text-dim); font-weight: 500; }
+.identity .region-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.identity .region  { color: var(--text-dim); font-size: 12px; letter-spacing: 0.06em; }
+.identity .lv-badge {
+  font-size: 11px;
+  font-family: var(--body);
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(124,132,242,0.12);
+  border: 1px solid rgba(124,132,242,0.3);
+  border-radius: 20px;
+  padding: 1px 8px;
+}
+
+/* ── Rank badge ──────────────────────────────────────── */
+.rank {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  padding: 10px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+.rank-unranked { margin-left: auto; color: var(--text-dim); font-size: 13px; }
+
+.crest-wrap {
+  --crop: 14px;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
+  position: relative;
+  flex: 0 0 72px;
+}
+.crest-img {
+  width:  calc(100% + var(--crop) * 2);
+  height: calc(100% + var(--crop) * 2);
+  margin: calc(var(--crop) * -1);
+  object-fit: cover;
+  display: block;
+}
+
+.crest {
+  width: 30px;
+  height: 33px;
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: var(--text-dim);
+}
+.crest.iron        { background: #7B7B7B; }
+.crest.bronze      { background: #B06A3B; }
+.crest.silver      { background: #B9C4CF; }
+.crest.gold        { background: #F2C14E; }
+.crest.platinum    { background: #4FD1C5; }
+.crest.emerald     { background: #2ECC71; }
+.crest.diamond     { background: #6FB7FF; }
+.crest.master      { background: #B36FE0; }
+.crest.grandmaster { background: #E0653A; }
+.crest.challenger  { background: linear-gradient(135deg, #F2C14E, #EAF0FF); }
+
+.rank .tier  { font-family: var(--display); font-weight: 600; font-size: 14px; letter-spacing: 0.05em; }
+.rank .lp    { color: var(--text-dim); font-size: 12px; }
+.rank .lp b  { color: var(--text); }
+
+/* ── Stats summary ───────────────────────────────────── */
+.summary {
+  flex-basis: 100%;
+  display: flex;
+  gap: 26px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.stat .v      { font-family: var(--display); font-weight: 600; font-size: 19px; }
+.stat .v.good { color: var(--p-top4); }
+.stat .k      { color: var(--text-dim); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+
+/* ── Game mode tabs ──────────────────────────────────── */
+.mode-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.mode-tab {
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: var(--body);
+}
+.mode-tab:hover { color: var(--text); border-color: #39435c; }
+.mode-tab.on    { color: #0E1320; background: var(--accent); border-color: var(--accent); }
+
+@media (max-width: 680px) {
+  .rank,
+  .rank-unranked { margin-left: 0; }
+}

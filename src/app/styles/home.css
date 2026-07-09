@@ -1,0 +1,111 @@
+/* ── Home hero ────────────────────────────────────────── */
+.home { display: flex; flex-direction: column; gap: 28px; }
+
+.home-hero {
+  text-align: center;
+  padding: 44px 0 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.home-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 40px;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+}
+.home-sub { color: var(--text-dim); font-size: 16px; max-width: 560px; line-height: 1.5; }
+
+.home-hero .search         { max-width: 600px; width: 100%; margin-top: 6px; }
+.home-hero .search input   { height: 48px; font-size: 15px; }
+.home-hero .search .region { height: 48px; }
+
+.home-hint   { color: var(--text-dim); font-size: 13px; }
+.home-hint b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+
+/* ── Top players ─────────────────────────────────────── */
+.home-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; align-items: start; }
+
+.home-top   { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 16px 18px; }
+.card-head  { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.card-head h2 { font-family: var(--display); font-weight: 700; font-size: 17px; }
+.card-sub   { color: var(--text-dim); font-size: 12px; letter-spacing: 0.06em; }
+
+.top-list { list-style: none; display: flex; flex-direction: column; }
+.top-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 6px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+}
+.top-list li:first-child .top-row { border-top: none; }
+a.top-row:hover { background: var(--surface-2); }
+
+.top-row:has(.top-rank.top1) {
+  position: relative;
+  background: var(--surface);
+  border-top: none;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+  filter: drop-shadow(0 0 12px var(--holo-glow-vi)) drop-shadow(0 8px 16px -8px var(--holo-glow-cy));
+}
+.top-row:has(.top-rank.top1)::before {
+  content: ""; position: absolute; inset: 0; padding: 1.5px;
+  background: var(--holo); clip-path: inherit;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+}
+
+.top-rank       { font-family: var(--display); font-weight: 700; font-size: 14px; color: var(--text-dim); text-align: center; }
+.top-rank.top1  {
+  background: var(--holo); color: #140F24; border-radius: 50%;
+  width: 20px; height: 20px; display: grid; place-items: center;
+  justify-self: center; font-size: 12px;
+}
+.top-name       { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-tag        { color: var(--text-dim); font-size: 12px; margin-left: 4px; font-weight: 400; }
+.top-lp         { color: var(--text-dim); font-size: 13px; }
+.top-all        { display: inline-block; margin-top: 10px; color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
+.top-all:hover  { text-decoration: underline; }
+.top-empty      { color: var(--text-dim); font-size: 13px; padding: 12px 4px; }
+
+/* ── Feature cards ───────────────────────────────────── */
+.home-cards { display: flex; flex-direction: column; gap: 10px; }
+.feature {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  text-decoration: none;
+  color: var(--text);
+}
+a.feature:hover  { border-color: #39435c; background: var(--surface-2); }
+.feature-name    { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.feature-name em {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.feature-desc { color: var(--text-dim); font-size: 13px; }
+.feature-go   { color: var(--accent); font-size: 13px; font-weight: 600; margin-top: 2px; }
+.feature.soon { opacity: 0.7; }
+
+@media (max-width: 680px) {
+  .home-grid  { grid-template-columns: 1fr; }
+  .home-title { font-size: 30px; }
+  .home-hero  { padding: 28px 0 4px; }
+}

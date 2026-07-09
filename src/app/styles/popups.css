@@ -1,0 +1,99 @@
+/* ── Hover tooltip ───────────────────────────────────── */
+.gd-tooltip {
+  position: fixed;
+  z-index: 2000;
+  pointer-events: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  max-width: 280px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+}
+.gd-tt-name { display: block; font-weight: 600; font-size: 13px; }
+.gd-tt-sub  { display: block; color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.gd-tt-desc { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin-top: 5px; white-space: pre-wrap; }
+
+/* ── Detail modal ────────────────────────────────────── */
+@keyframes gd-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.gd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: rgba(8,11,18,0.75);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  animation: gd-fade .15s ease both;
+}
+
+.gd-modal {
+  position: relative;
+  width: min(480px, 100%);
+  max-height: 82vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: rise .2s ease both;
+}
+
+/* ── Shared helpers ──────────────────────────────────── */
+
+/* letter fallback when icon is missing */
+.gd-icon-ph {
+  display: grid;
+  place-items: center;
+  font-family: var(--display);
+  font-weight: 700;
+  color: var(--text-dim);
+  font-size: 22px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* trait breakpoint pills inside the unit/trait modal */
+.gd-bp-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.gd-bp-pill.s1 { border-color: #6e4a2e; color: #B06A3B; }
+.gd-bp-pill.s2 { border-color: #6b7480; color: #B9C4CF; }
+.gd-bp-pill.s3 { border-color: #7a6420; color: #F2C14E; }
+.gd-bp-pill.s4 {
+  border-color: transparent;
+  color: #140F24;
+  background: var(--holo);
+  clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%);
+  box-shadow: 0 0 8px -2px var(--holo-glow-cy), 0 0 14px -2px var(--holo-glow-vi);
+}
+.gd-bp-pill.unique { border-color: var(--unique); color: var(--unique); }
+
+/* trait name pills on unit modal */
+.gd-trait-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+
+/* fallback when no library data is available */
+.gd-fallback { padding: 4px 0; }
