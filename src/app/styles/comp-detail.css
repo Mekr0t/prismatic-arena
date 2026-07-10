@@ -1,0 +1,350 @@
+/* Comp-detail page (/comps/[key]) — archetype drill-down.
+   Reuses tier.css's .tier-badge/.rr-tag and the .ex-* tile conventions;
+   everything new is .cd-*. */
+
+.cd {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1060px;
+  margin: 0 auto;
+}
+
+.cd-back {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.cd-back a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.cd-back a:hover {
+  text-decoration: underline;
+}
+.cd-scope {
+  color: var(--text-dim);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.cd-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  flex-wrap: wrap;
+}
+.cd-title {
+  flex: 1;
+  min-width: 220px;
+}
+.cd-title h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  line-height: 1.2;
+}
+.cd-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cd-stats {
+  display: flex;
+  gap: 18px;
+}
+.cd-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 58px;
+}
+.cd-stat b {
+  font-size: 16px;
+}
+.cd-stat span {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Core / flex strips ─────────────────────────────────────────────────── */
+
+.cd-strips {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.cd-strip h2,
+.cd-panel h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.cd-strip-units {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.cd-freq {
+  margin-top: 2px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ── Panels / columns ───────────────────────────────────────────────────── */
+
+.cd-cols {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 18px;
+}
+@media (max-width: 860px) {
+  .cd-cols {
+    grid-template-columns: 1fr;
+  }
+}
+.cd-panel {
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.cd-note {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.cd-gap {
+  margin-top: 16px !important;
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────────── */
+
+.cd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.cd-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.cd-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.cd-table tr:last-child td {
+  border-bottom: none;
+}
+.cd-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cd-table .good {
+  color: #3ddc97;
+}
+.cd-table .bad {
+  color: #ff6b81;
+}
+
+.cd-unit-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cd-unit-name {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.cd-star-split {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* Mini unit portrait (tables, variants, builds) — cost-colored border via
+   the canonical .c1–.c5 classes. */
+.cd-mini {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  vertical-align: middle;
+  cursor: pointer;
+  flex: none;
+}
+.cd-mini img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cd-var-units {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.cd-var-star {
+  font-size: 11px;
+  color: var(--gold);
+}
+
+/* ── Panel tabs ─────────────────────────────────────────────────────────── */
+
+.cd-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.cd-tabs button {
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+.cd-tabs button:hover {
+  color: var(--text);
+}
+.cd-tabs button.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ── Level bands ────────────────────────────────────────────────────────── */
+
+.cd-bands {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cd-band {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.cd-band-label {
+  font-weight: 600;
+  text-align: center;
+  padding: 2px 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.cd-band-bar {
+  display: block;
+  height: 10px;
+  background: var(--bg);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.cd-band-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+}
+/* Placement histogram: top-4 finishes in accent, bottom-4 muted. */
+.cd-pl .cd-band-bar i.bot {
+  background: var(--text-dim);
+  opacity: 0.45;
+}
+.cd-band-val {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── Carry builds ───────────────────────────────────────────────────────── */
+
+.cd-builds {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cd-build {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.cd-build-sets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cd-build-set {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cd-build-items {
+  display: inline-flex;
+  gap: 3px;
+}
+.cd-build-items img,
+.cd-build-items .ex-item-ph {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.cd-build-stat {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Most played boards ─────────────────────────────────────────────────── */
+
+.cd-boards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cd-board {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.cd-board-meta {
+  min-width: 150px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.cd-board-meta b {
+  color: var(--text);
+}

@@ -116,7 +116,8 @@ interface JsonKeyTrait {
   trait_id: string;
   min_units: number;
 }
-interface CompStatRow {
+/** Member-row shape off the wire — shared with comp-detail-service. */
+export interface CompStatRow {
   comp_id: number;
   set_number: number;
   name: string | null;
@@ -138,7 +139,7 @@ interface CompStatRow {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function asCarries(v: unknown): JsonCarry[] {
+export function asCarries(v: unknown): JsonCarry[] {
   if (!Array.isArray(v)) return [];
   return v.filter(
     (c): c is JsonCarry => !!c && typeof (c as JsonCarry).character_id === 'string',
@@ -158,7 +159,7 @@ function bucketRank(b: string): number {
 
 // ── Selector/default resolution ───────────────────────────────────────────────
 
-async function loadCombos(): Promise<{ combos: ComboRow[]; patches: Map<number, PatchRow> }> {
+export async function loadCombos(): Promise<{ combos: ComboRow[]; patches: Map<number, PatchRow> }> {
   const [combos, patchRows] = await Promise.all([
     query<ComboRow>(
       `SELECT patch_id, region, rank_bucket, SUM(n)::int AS boards
@@ -174,7 +175,7 @@ async function loadCombos(): Promise<{ combos: ComboRow[]; patches: Map<number, 
   return { combos, patches };
 }
 
-function resolveSelection(
+export function resolveSelection(
   combos: ComboRow[],
   patches: Map<number, PatchRow>,
   q: TierListQuery,
@@ -359,27 +360,32 @@ function poolStats(members: CompStatRow[]): SufficientStats {
 /** Build one archetype row: pooled metrics + tier from the combined sample.
  *  Returns the representative's OWN n separately — that's the correct
  *  denominator for its example board, which is aggregated from the
- *  representative comp alone. */
-function buildArchetypeRow(
+ *  representative comp alone. Shared with comp-detail-service (the detail
+ *  header is exactly this row). */
+export function buildArchetypeRow(
   members: CompStatRow[],
   cat: CatalogT,
   bucketTotal: number,
 ): { row: CompRowVM; repCompId: number; repN: number } {
   const pooled = poolStats(members);
 
-  // Representative = the most complete hit-state with a usable sample: most
-  // 3★s (comps.carries length), then highest n, then comp_id for determinism.
-  // After pooling, the highest-n member is usually a missed-hit variant — the
-  // archetype's face should be the board the line is trying to hit, not its
-  // most common failure state. Members below max(5, 5% of pooled n) are only
-  // eligible when nothing bigger exists (all-tail archetypes).
+  // Representative = the most complete hit-state with a usable sample, where
+  // "hit" means a 3★ on one of the LABEL'S CARRIES — the units the line
+  // actually rolls for. A lottery 3★ on a fast-8/9 line (1%-share triple-hit
+  // boards) is luck, not identity, and must not become the archetype's face;
+  // with no carry hits anywhere, this degrades to the most-played board.
+  // Members below max(5, 5% of pooled n) are only eligible when nothing
+  // bigger exists (all-tail archetypes).
+  const labelCarries = new Set(parseLabelKey(members[0].gkey)?.carryIds ?? []);
+  const carryStars = (m: CompStatRow): number =>
+    asCarries(m.carries).filter((c) => labelCarries.has(c.character_id)).length;
   const minRepN = Math.max(5, Math.ceil(pooled.n * 0.05));
   const eligible = members.filter((m) => (m.n ?? 0) >= minRepN);
   const pool = eligible.length > 0 ? eligible : members;
   let rep = pool[0];
-  let repStars = asCarries(rep.carries).length;
+  let repStars = carryStars(rep);
   for (const m of pool) {
-    const stars = asCarries(m.carries).length;
+    const stars = carryStars(m);
     const mn = m.n ?? 0;
     const rn = rep.n ?? 0;
     if (
@@ -402,6 +408,7 @@ function buildArchetypeRow(
   const metrics = computeMetrics(pooled);
   const row: CompRowVM = {
     identity: buildIdentity(rep, cat, parseLabelKey(rep.gkey)),
+    groupKey: rep.gkey,
     metrics,
     playRate: bucketTotal > 0 ? metrics.n / bucketTotal : 0,
     tier: pinned?.tier ?? scoreToTier(metrics.score),

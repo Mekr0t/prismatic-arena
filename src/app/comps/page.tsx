@@ -67,7 +67,11 @@ export default async function CompsPage({
           nicheAvailable={data.nicheAvailable}
         />
 
-        <TierTable groups={data.groups} niche={data.niche} />
+        <TierTable
+          groups={data.groups}
+          niche={data.niche}
+          detailQuery={`?patch=${s.patchId}&region=${encodeURIComponent(s.region)}&bucket=${encodeURIComponent(s.rankBucket)}`}
+        />
       </section>
     </main>
   );

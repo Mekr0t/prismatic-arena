@@ -34,6 +34,10 @@ interface EvalPair {
   b: number;
   expect: 'merge' | 'split';
   note?: string;
+  /** Tracked aspiration, not a gate: printed as KNOWN when unmet, exit stays 0.
+   *  For boundary cases the current algorithm can't satisfy yet (e.g. cases
+   *  waiting on the trait-similarity term). */
+  known?: boolean;
 }
 
 function numArg(args: string[], flag: string): number | undefined {
@@ -151,6 +155,7 @@ function summary(
 function evalPairs(
   byId: Map<number, CompProfile>,
   labelById: Map<number, string>,
+  archetypeProfiles: ReadonlyMap<string, CompProfile>,
   file: string,
 ): void {
   if (!existsSync(file)) {
@@ -178,13 +183,23 @@ function evalPairs(
     const lb = labelById.get(p.b);
     const merged = la === lb;
     const ok = (p.expect === 'merge') === merged;
-    if (!ok) failures++;
+    if (!ok && !p.known) failures++;
+    const verdict = ok ? 'PASS ' : p.known ? 'KNOWN' : 'FAIL ';
     console.log(
-      `  ${ok ? 'PASS' : 'FAIL'}  ${p.a} vs ${p.b} — expected ${p.expect}, got ${merged ? 'merge' : 'split'}${note}`,
+      `  ${verdict} ${p.a} vs ${p.b} — expected ${p.expect}, got ${merged ? 'merge' : 'split'}${note}`,
     );
     if (!ok) {
       console.log(`        pairwise: ${fmtCompare(debugCompare(a, b))}`);
       console.log(`        labels:   ${la}  |  ${lb}`);
+      // A pair can merge pairwise yet split in the full run — the accumulated
+      // archetype profiles are what pass 1 / the fold pass actually compare.
+      const archA = la !== undefined ? archetypeProfiles.get(la) : undefined;
+      const archB = lb !== undefined ? archetypeProfiles.get(lb) : undefined;
+      if (archB) console.log(`        a vs B's archetype: ${fmtCompare(debugCompare(a, archB))}`);
+      if (archA) console.log(`        b vs A's archetype: ${fmtCompare(debugCompare(b, archA))}`);
+      if (archA && archB) {
+        console.log(`        A-arch vs B-arch:   ${fmtCompare(debugCompare(archA, archB))}`);
+      }
     }
   }
   console.log(failures === 0 ? '\nAll labeled pairs pass.' : `\n${failures} pair(s) failing.`);
@@ -243,7 +258,7 @@ async function main(): Promise<void> {
     byId,
     labelById,
   );
-  evalPairs(byId, labelById, pairsFile);
+  evalPairs(byId, labelById, result.archetypeProfiles, pairsFile);
 }
 
 main()

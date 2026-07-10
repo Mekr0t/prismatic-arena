@@ -9,6 +9,7 @@
     { "a": 140839, "b": 627271, "expect": "merge", "note": "Fiora line: doubled 4-cost Master Yi is a bench copy, not the duplicate augment — same line" },
     { "a": 613515, "b": 140914, "expect": "split", "note": "Ornn/Samira duplicate-augment build (2x 3-costs) vs the Space Groove classic line" },
     { "a": 142937, "b": 627314, "expect": "split", "note": "Lulu line (full hit) vs Jax hero-augment archetype" },
-    { "a": 140839, "b": 140941, "expect": "split", "note": "Fiora/Kindred/Yi/TK vs Jhin/Nunu/TK/Xayah — different lines" }
+    { "a": 140839, "b": 140941, "expect": "split", "note": "Fiora/Kindred/Yi/TK vs Jhin/Nunu/TK/Xayah — different lines" },
+    { "a": 637161, "b": 142822, "expect": "merge", "known": true, "note": "Shepherd Sona/LeBlanc/Leona core splashing Karma vs Nunu — user-labeled; boundary case: flagship boards merge pairwise (0.81) but the two populations sit at jaccard 0.43 — waiting on the trait-similarity term" }
   ]
 }

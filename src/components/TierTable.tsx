@@ -4,6 +4,7 @@
 // in the section header (not repeated per row). Niche section appends when the
 // toggle is on. Server component rendering the client ExampleTeam as a child.
 
+import Link from 'next/link';
 import { ExampleTeam } from './ExampleTeam';
 import { StatCell } from './StatCell';
 import type { TierGroupVM, CompRowVM } from '@/server/comps-service';
@@ -23,15 +24,19 @@ function archetypeClass(archetype: string | null): string {
   return archetype.includes('reroll') ? 'tag-reroll' : 'tag-fast';
 }
 
-function CompRow({ row }: { row: CompRowVM }) {
+function CompRow({ row, detailQuery }: { row: CompRowVM; detailQuery: string }) {
   const archetype = row.identity.archetype;
   const tag = archetype ? ARCHETYPE_LABELS[archetype] : undefined;
   return (
     <div className="rich-row">
       <div className="rr-ident">
-        <span className="rr-name" title={row.identity.signature}>
+        <Link
+          className="rr-name"
+          href={`/comps/${encodeURIComponent(row.groupKey)}${detailQuery}`}
+          title={row.identity.signature}
+        >
           {row.identity.displayName ?? '—'}
-        </span>
+        </Link>
         {tag && <span className={`rr-tag ${archetypeClass(archetype)}`}>{tag}</span>}
         {row.identity.dupUnits.length > 0 && (
           <span
@@ -56,9 +61,12 @@ function CompRow({ row }: { row: CompRowVM }) {
 export function TierTable({
   groups,
   niche,
+  detailQuery = '',
 }: {
   groups: TierGroupVM[];
   niche: CompRowVM[] | null;
+  /** Search string appended to detail links so the selection round-trips. */
+  detailQuery?: string;
 }) {
   const empty = groups.length === 0;
 
@@ -80,7 +88,7 @@ export function TierTable({
                 </span>
               </div>
               {g.comps.map((row) => (
-                <CompRow key={row.identity.compId} row={row} />
+                <CompRow key={row.identity.compId} row={row} detailQuery={detailQuery} />
               ))}
             </section>
           ))
@@ -92,7 +100,7 @@ export function TierTable({
           <div className="niche-head">Niche &middot; below sample threshold</div>
           <div className="tier-table">
             {niche.map((row) => (
-              <CompRow key={row.identity.compId} row={row} />
+              <CompRow key={row.identity.compId} row={row} detailQuery={detailQuery} />
             ))}
           </div>
         </>

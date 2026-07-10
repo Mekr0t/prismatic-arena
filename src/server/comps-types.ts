@@ -68,6 +68,8 @@ export interface CompIdentityVM {
 
 export interface CompRowVM {
   identity: CompIdentityVM;
+  /** Grouping key ('m:<label>' or 'c:<comp_id>') — the detail-page URL key. */
+  groupKey: string;
   metrics: CompMetrics; // n, avgPlacement, top4Rate, winRate, intervals, score, lowSample
   playRate: number; // n / bucket_total (0 if the bucket total is 0)
   tier: string; // S/A/B/C/D — stored (override-aware) for tier rows; computed for niche
@@ -117,4 +119,95 @@ export interface TierListQuery {
   region?: string;
   rankBucket?: string;
   niche?: boolean;
+}
+
+// ── Comp detail page (archetype drill-down) ───────────────────────────────────
+
+export interface DetailStarLineVM {
+  star: number; // 1..3 (capped)
+  boards: number;
+  avgPlacement: number;
+}
+
+export interface DetailUnitVM {
+  characterId: string;
+  name: string;
+  cost: number;
+  iconUrl: string | null;
+  freq: number; // share of the archetype's boards fielding the unit (0..1)
+  modalStar: number; // most common star tier (3 renders a pip)
+  boards: number;
+  avgPlacement: number;
+  /** avgPlacement − archetype average; negative = the unit improves the comp. */
+  delta: number;
+  top4Rate: number;
+  winRate: number;
+  perStar: DetailStarLineVM[]; // star tiers with a usable sample, star desc
+  items: ExampleItemVM[]; // modal completed set (label carries only)
+}
+
+export interface DetailBuildSetVM {
+  items: ExampleItemVM[];
+  boards: number;
+  rate: number; // share of the carry's itemized boards running this set
+  avgPlacement: number;
+}
+
+export interface DetailBuildVM {
+  characterId: string;
+  name: string;
+  cost: number;
+  iconUrl: string | null;
+  sets: DetailBuildSetVM[]; // most-played first
+}
+
+export interface DetailVariantVM {
+  /** Sorted 3★ ids, pipe-joined; '' = the no-hit state. */
+  key: string;
+  units: CarryPortraitVM[]; // the hit units (empty for the no-hit state)
+  n: number;
+  share: number; // n / archetype games
+  avgPlacement: number;
+  top4Rate: number;
+  winRate: number;
+}
+
+export interface DetailLevelBandVM {
+  band: string; // '7-' | '8' | '9+'
+  share: number;
+  avgPlacement: number;
+}
+
+export interface DetailPlacementVM {
+  placement: number; // 1..8
+  boards: number;
+  share: number; // boards / archetype boards
+}
+
+export interface DetailBoardVM {
+  compId: number;
+  n: number;
+  avgPlacement: number;
+  team: ExampleTeamVM;
+}
+
+export interface CompDetailVM {
+  selection: TierListSelection;
+  groupKey: string;
+  identity: CompIdentityVM;
+  metrics: CompMetrics; // pooled across members
+  playRate: number;
+  tier: string;
+  memberCount: number; // exact-board comps folded into this archetype (in-bucket)
+  core: DetailUnitVM[]; // freq >= core threshold, cost desc
+  flex: DetailUnitVM[]; // mid-frequency units, freq desc
+  unitsTable: DetailUnitVM[]; // every unit above the sample floor, freq desc
+  levelBands: DetailLevelBandVM[];
+  placements: DetailPlacementVM[]; // 1st..8th histogram (always 8 entries)
+  variants: DetailVariantVM[]; // hit-state groups, n desc (capped + 'other')
+  /** Whether the hit-states tab should be the default panel: true for
+   *  hit-shaped lines (rerolls), false when hits are incidental. */
+  hitStatesDefault: boolean;
+  builds: DetailBuildVM[]; // per label carry, modal item sets
+  topBoards: DetailBoardVM[]; // most-played exact boards with example strips
 }

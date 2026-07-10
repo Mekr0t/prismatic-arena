@@ -74,6 +74,13 @@ const DUP_DOMINANT_RATE   = _n(process.env.MERGE_DUP_DOMINANT_RATE,   0.40);
 // top of SCORE_THRESHOLD — the tail has no itemization evidence, so the unit
 // overlap has to work a little harder.
 const ASSIGN_MARGIN       = _n(process.env.MERGE_ASSIGN_MARGIN,       0.02);
+// Strong carry agreement buys unit-overlap slack: two variants that agree on
+// (nearly) all itemized carries are the same line even when their secondary
+// units drift apart (e.g. the same Sona/LeBlanc/Leona core splashing Karma in
+// one build and Nunu in the other). Applies to the score and jaccard bars
+// only — hard class guards are never relaxed.
+const STRONG_CARRY_OVERLAP = _n(process.env.MERGE_STRONG_CARRY_OVERLAP, 0.75);
+const STRONG_CARRY_SLACK   = _n(process.env.MERGE_STRONG_CARRY_SLACK,   0.06);
 const REQUIRE_CARRY       = process.env.MERGE_REQUIRE_CARRY      !== 'false';
 // Conflict-only 3★ guard (see header). Set MERGE_REQUIRE_DUP_CLASS=false to
 // disable entirely (any 3★ difference merges).
@@ -300,9 +307,10 @@ function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult
   if (REQUIRE_COPY_CLASS && comp.copySig !== domCopy) fails.push('copy_class');
   if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== domHeroAugment) fails.push('hero_augment');
   if (REQUIRE_CARRY && carryOverlap < MIN_CARRY_OVERLAP) fails.push('carry_overlap');
+  const slack = carryOverlap >= STRONG_CARRY_OVERLAP ? STRONG_CARRY_SLACK : 0;
   if (containment < MIN_CONTAINMENT) fails.push('containment');
-  if (jaccard < MIN_JACCARD) fails.push('jaccard');
-  if (score < SCORE_THRESHOLD) fails.push('score');
+  if (jaccard < MIN_JACCARD - slack) fails.push('jaccard');
+  if (score < SCORE_THRESHOLD - slack) fails.push('score');
 
   return { shouldMerge: fails.length === 0, score, containment, jaccard, carryOverlap, fails };
 }

@@ -159,19 +159,39 @@ test('survivor effect: boards differing only in cap units merge when identity-we
   assert.equal(label(res, died), label(res, survived));
 });
 
-test('control: the same cap-unit difference splits unweighted (why weighting exists)', () => {
-  const died = P({
+test('strong carry agreement buys unit slack: cap-swap variants merge even unweighted', () => {
+  // Same itemized carries, same core, different last-two units — the Shepherd
+  // Sona/LeBlanc/Leona case (Karma splash vs Nunu splash). Carry overlap 1.0
+  // relaxes the score bar by MERGE_STRONG_CARRY_SLACK.
+  const a = P({
     units: ['A', 'B', 'C', 'D', 'E', 'F', 'X1', 'X2'],
     carries: ['A', 'B'],
     boards: 100,
   });
-  const survived = P({
+  const b = P({
     units: ['A', 'B', 'C', 'D', 'E', 'F', 'Y1', 'Y2'],
     carries: ['A', 'B'],
     boards: 40,
   });
-  const res = mergeComps([died, survived]);
-  assert.notEqual(label(res, died), label(res, survived));
+  const res = mergeComps([a, b]);
+  assert.equal(label(res, a), label(res, b));
+});
+
+test('control: carry agreement cannot rescue low unit overlap', () => {
+  // Identical carries but only half the board shared — containment hard-fails
+  // no matter how strong the carry agreement is.
+  const a = P({
+    units: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+    carries: ['A', 'B'],
+    boards: 100,
+  });
+  const b = P({
+    units: ['A', 'B', 'C', 'D', 'W', 'X', 'Y', 'Z'],
+    carries: ['A', 'B'],
+    boards: 40,
+  });
+  const res = mergeComps([a, b]);
+  assert.notEqual(label(res, a), label(res, b));
 });
 
 // ── Fold pass ─────────────────────────────────────────────────────────────────
