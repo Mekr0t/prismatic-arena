@@ -1,30 +1,53 @@
 // comp-merge.ts — carry-archetype grouping for comps.
 //
-// Ports tft_comp_merge.py to TypeScript. Takes pre-built CompProfile records
-// (one per exact-unit comp, with its item-carry set from carry-classify) and
-// groups them into carry archetypes using unit-overlap + carry-overlap scoring.
+// Takes pre-built CompProfile records (one per exact-unit comp, built by
+// comp-profile.ts from DB data + carry-classify) and groups them into carry
+// archetypes using weighted unit-overlap + carry-overlap scoring.
 //
-// Algorithm (online, processes most-populated comps first so archetypes are
-// anchored by the most-observed variant):
-//   for each comp (sorted by boardCount desc):
-//     find the existing archetype with the highest similarity score
-//     if score >= SCORE_THRESHOLD AND no hard-fail: add to that archetype
-//     else: start a new archetype seeded by this comp
+// Algorithm (three passes):
+//   1. Greedy online grouping, most-populated comps first so archetypes are
+//      anchored by the most-observed variant. Each comp joins the best-scoring
+//      archetype AMONG THOSE THAT PASS every hard guard (a guard-failing
+//      archetype is a different class — it must not veto joining a compatible
+//      one just because it scores higher), else seeds a new archetype.
+//   2. Fold pass: greedy ordering can strand a smaller archetype that, with its
+//      full membership accumulated, now cleanly merges into a bigger one.
+//      Each archetype's accumulated profile (smallest first) is compared
+//      against the larger survivors under the exact same guards; fold on pass.
+//   3. Labeling: two archetypes that stay separate can still produce the same
+//      carry label. meta_comp IS the downstream grouping key (comps-service
+//      pools stats by it), so a colliding label would silently re-merge what
+//      the guards split — all but the biggest get a stable ##k:<anchorCompId>
+//      disambiguator (label parsers ignore unknown ## segments).
 //
-// Similarity score = UNIT_WEIGHT * containmentSmall + JACCARD_WEIGHT * jaccard
+// Similarity score = UNIT_WEIGHT * containment + JACCARD_WEIGHT * jaccard
 //                  + CARRY_WEIGHT * carryOverlap
 //
+// Containment/jaccard are WEIGHTED: each unit counts by its identity weight
+// (itemized carries / 3★ = 1, ordinary core ≈ 0.7, un-itemized 4/5-cost cap
+// slots ≈ 0.25 — assigned in comp-profile.ts). Two boards that differ only in
+// late-game cap units score as the same line (the "survivor effect": one board
+// lived long enough to swap filler for legendaries), while disagreeing on
+// carries still separates them.
+//
 // Hard-fail guards (independently configurable):
-//   - duplicate_pattern  : 3-star signature must match the archetype's dominant
-//   - copy_pattern       : duplicate-copy set must match (dup-copy augment boards
-//                          stay a distinct archetype from classic single-copy ones)
-//   - hero_augment       : hero-augment champ (if any) must match the archetype's
-//                          dominant one (see carry-classify.ts's classifyHeroAugments) —
-//                          a hero-augmented board stays a distinct archetype from the
-//                          same units without the augment
-//   - carry_mismatch     : carry overlap must be >= MIN_CARRY_OVERLAP
-//   - containment        : containmentSmall must be >= MIN_CONTAINMENT
-//   - jaccard            : jaccard must be >= MIN_JACCARD
+//   - grade3_conflict : conflict-only 3★ guard. Compares carry-grade 3★ sets
+//                       (3★ units that are also itemized — an incidental 3★
+//                       from augment copies doesn't count) and fails ONLY when
+//                       both sides are non-empty and DISJOINT: rolling for
+//                       different units (Jax reroll vs Fiora reroll) splits.
+//                       A missed hit (subset), an extra hit (superset), or a
+//                       different secondary hit (overlap) merges — hit-states
+//                       of one line pool, so the line's stats include the
+//                       boards that went for it and missed.
+//   - copy_class      : duplicate-copy set must match (dup-copy augment boards
+//                       stay a distinct archetype from classic single-copy ones)
+//   - hero_augment    : hero-augment champ (if any) must match the archetype's
+//                       dominant one (see carry-classify.ts) — a hero-augmented
+//                       board never merges with a non-augment board
+//   - carry_overlap   : carry overlap must be >= MIN_CARRY_OVERLAP
+//   - containment     : weighted containment must be >= MIN_CONTAINMENT
+//   - jaccard         : weighted jaccard must be >= MIN_JACCARD
 //
 // All thresholds are env-overridable.
 
@@ -42,7 +65,18 @@ const JACCARD_WEIGHT      = _n(process.env.MERGE_JACCARD_WEIGHT,      0.35);
 const CARRY_WEIGHT        = _n(process.env.MERGE_CARRY_WEIGHT,        0.20);
 const OPTIONAL_THRESHOLD  = _n(process.env.MERGE_OPTIONAL_THRESHOLD,  0.35);
 const CARRY_DOMINANT_RATE = _n(process.env.MERGE_CARRY_DOMINANT_RATE, 0.40);
+// Share of an archetype's HIT members (members with any carry-grade 3★) that
+// must field a unit at carry-grade 3★ for it to count as the archetype's
+// dominant hit. Denominator excludes no-hit members so pooling misses into the
+// line can't erode the conflict guard.
+const DUP_DOMINANT_RATE   = _n(process.env.MERGE_DUP_DOMINANT_RATE,   0.40);
+// Extra score demanded of a carry-blind tail assignment (see assignTail) on
+// top of SCORE_THRESHOLD — the tail has no itemization evidence, so the unit
+// overlap has to work a little harder.
+const ASSIGN_MARGIN       = _n(process.env.MERGE_ASSIGN_MARGIN,       0.02);
 const REQUIRE_CARRY       = process.env.MERGE_REQUIRE_CARRY      !== 'false';
+// Conflict-only 3★ guard (see header). Set MERGE_REQUIRE_DUP_CLASS=false to
+// disable entirely (any 3★ difference merges).
 const REQUIRE_DUP_CLASS   = process.env.MERGE_REQUIRE_DUP_CLASS  !== 'false';
 // Duplicate-copy augment: boards that run two copies of a unit (one 3-star, one
 // lower) are a distinct archetype and must not merge with the classic single-copy
@@ -55,10 +89,13 @@ const REQUIRE_COPY_CLASS  = process.env.MERGE_REQUIRE_COPY_CLASS !== 'false';
 // MERGE_REQUIRE_HERO_AUGMENT_CLASS=false to disable.
 const REQUIRE_HERO_AUGMENT_CLASS = process.env.MERGE_REQUIRE_HERO_AUGMENT_CLASS !== 'false';
 
+/** Weight assumed for units missing from CompProfile.unitWeights. */
+const DEFAULT_UNIT_WEIGHT = 1;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /**
- * Per-comp profile, built by the merge stage from DB data + carry-classify.
+ * Per-comp profile, built by comp-profile.ts from DB data + carry-classify.
  * Because every board in a comp has the *exact* same unit set (cluster.ts
  * groups by identity), all units are at implicit frequency 1.0 within the comp.
  * Frequency accumulation happens at the archetype level across comps.
@@ -68,12 +105,18 @@ export interface CompProfile {
   setNumber: number;
   /** Distinct unit ids (copies collapsed) — used for overlap scoring. */
   units: Set<string>;
-  /** Confirmed carry units (isBucketCarry=true) from carry-classify. */
+  /** Per-unit identity weight in (0..1] for overlap scoring. Units absent from
+   *  the map count at DEFAULT_UNIT_WEIGHT (1). Assigned by comp-profile.ts:
+   *  itemized carries / 3★ = 1, core ≈ 0.7, un-itemized 4/5-cost caps ≈ 0.25. */
+  unitWeights: Map<string, number>;
+  /** Carry units for overlap: isBucketCarry from carry-classify, with a
+   *  top-itemized fallback for comps that never fully itemize (dead / missed
+   *  boards) — see comp-profile.ts. */
   carries: Set<string>;
-  /** Sorted 3-star character IDs, pipe-joined; '' if no 3-stars. Used as the
-   *  "duplicate class" guard — reroll comps with different starred units shouldn't
-   *  merge, even when they overlap heavily on the rest of the board. */
-  duplicateSig: string;
+  /** Carry-grade 3★ units: fielded at 3★ AND itemized (carry or reliably
+   *  top-itemized). Incidental 3★s — augment copies landing on a unit nobody
+   *  items — are excluded. Drives the conflict-only grade3 guard. */
+  carryGrade3: Set<string>;
   /** Sorted character IDs that appear 2+ times on the board (duplicate-copy
    *  augment), pipe-joined; '' for a classic single-copy board. Used as the "copy
    *  class" guard — a board that doubles a unit shouldn't merge with one that
@@ -93,6 +136,20 @@ export interface MergeResult {
   assignments: Map<number, string>;
   /** archetype label → compIds in that archetype. */
   archetypes: Map<string, number[]>;
+  /** Frozen post-merge archetype profiles keyed by final label — the input
+   *  for `assignTail` (sub-floor tail labeling in the merge stage). */
+  archetypeProfiles: Map<string, CompProfile>;
+}
+
+/** Verdict of comparing one comp against one archetype. `fails` lists every
+ *  reason it can't join ('score' included) — empty ⇔ shouldMerge. */
+export interface CompareResult {
+  shouldMerge: boolean;
+  score: number;
+  containment: number;
+  jaccard: number;
+  carryOverlap: number;
+  fails: string[];
 }
 
 // ── Internal accumulator ──────────────────────────────────────────────────────
@@ -102,12 +159,18 @@ interface ArchetypeAcc {
   setNumber: number;
   /** Unit → Σ boardCount (unnormalized; normalize by totalWeight for freq). */
   weightedFreq: Map<string, number>;
+  /** Unit → Σ (identity weight × boardCount) — divided by weightedFreq gives
+   *  the archetype-side identity weight for that unit. */
+  weightAcc: Map<string, number>;
   totalWeight: number;
   /** Carry unit → count of comps in this archetype that have it. */
   carryFreq: Map<string, number>;
   totalComps: number;
-  /** duplicateSig → count, for electing the dominant signature. */
-  dupSigCounts: Map<string, number>;
+  /** Unit → count of members with it at carry-grade 3★. */
+  grade3Freq: Map<string, number>;
+  /** Members with a non-empty carryGrade3 (the denominator for grade3Freq —
+   *  no-hit members must not dilute the dominant-hit election). */
+  grade3Members: number;
   /** copySig → count, for electing the dominant copy signature. */
   copySigCounts: Map<string, number>;
   /** heroAugmentSig → count, for electing the dominant hero-augment champ. */
@@ -116,27 +179,52 @@ interface ArchetypeAcc {
 
 // ── Similarity helpers ────────────────────────────────────────────────────────
 
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
-  let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  return inter / (a.size + b.size - inter);
+function unitWeight(comp: CompProfile, id: string): number {
+  return comp.unitWeights.get(id) ?? DEFAULT_UNIT_WEIGHT;
 }
 
-function containmentSmall(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
+/**
+ * Weighted containment + jaccard between a comp's units and an archetype's
+ * representative units. Each unit contributes its identity weight; a unit on
+ * both sides contributes the average of the two weights to the intersection.
+ * Empty-set conventions match the old unweighted versions: jaccard(∅,∅)=1,
+ * containment with either side empty = 0.
+ */
+function weightedOverlap(
+  comp: CompProfile,
+  rep: Map<string, number>,
+): { containment: number; jaccard: number } {
+  let wa = 0;
   let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  return inter / Math.min(a.size, b.size);
+  for (const u of comp.units) {
+    const w = unitWeight(comp, u);
+    wa += w;
+    const rw = rep.get(u);
+    if (rw !== undefined) inter += (w + rw) / 2;
+  }
+  let wb = 0;
+  for (const w of rep.values()) wb += w;
+
+  if (wa === 0 && wb === 0) return { containment: 0, jaccard: 1 };
+  if (wa === 0 || wb === 0) return { containment: 0, jaccard: 0 };
+
+  const union = wa + wb - inter;
+  return {
+    containment: inter / Math.min(wa, wb),
+    jaccard: union > 0 ? inter / union : 1,
+  };
 }
 
 // ── Archetype-profile accessors ───────────────────────────────────────────────
 
-function getRepUnits(acc: ArchetypeAcc): Set<string> {
-  const units = new Set<string>();
+/** Representative units (freq share >= OPTIONAL_THRESHOLD) → avg identity weight. */
+function getRepUnits(acc: ArchetypeAcc): Map<string, number> {
+  const units = new Map<string, number>();
   if (acc.totalWeight === 0) return units;
   for (const [id, w] of acc.weightedFreq) {
-    if (w / acc.totalWeight >= OPTIONAL_THRESHOLD) units.add(id);
+    if (w / acc.totalWeight >= OPTIONAL_THRESHOLD) {
+      units.set(id, (acc.weightAcc.get(id) ?? w) / w);
+    }
   }
   return units;
 }
@@ -159,6 +247,16 @@ function getDomCarries(acc: ArchetypeAcc): Set<string> {
   return dom;
 }
 
+/** Dominant carry-grade 3★ set, elected among HIT members only. */
+function getDomGrade3(acc: ArchetypeAcc): Set<string> {
+  const dom = new Set<string>();
+  if (acc.grade3Members === 0) return dom;
+  for (const [u, cnt] of acc.grade3Freq) {
+    if (cnt / acc.grade3Members >= DUP_DOMINANT_RATE) dom.add(u);
+  }
+  return dom;
+}
+
 function electDominant(counts: Map<string, number>): string {
   let best = '';
   let bestCnt = 0;
@@ -170,19 +268,12 @@ function electDominant(counts: Map<string, number>): string {
 
 // ── Comparison ────────────────────────────────────────────────────────────────
 
-function compareToArchetype(
-  comp: CompProfile,
-  acc: ArchetypeAcc,
-): { shouldMerge: boolean; score: number } {
+function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult {
   const repUnits   = getRepUnits(acc);
   const domCarries = getDomCarries(acc);
-  const domDup     = electDominant(acc.dupSigCounts);
+  const domGrade3  = getDomGrade3(acc);
   const domCopy    = electDominant(acc.copySigCounts);
   const domHeroAugment = electDominant(acc.heroAugmentSigCounts);
-
-  const dupMatch  = !REQUIRE_DUP_CLASS  || comp.duplicateSig === domDup;
-  const copyMatch = !REQUIRE_COPY_CLASS || comp.copySig === domCopy;
-  const heroAugmentMatch = !REQUIRE_HERO_AUGMENT_CLASS || comp.heroAugmentSig === domHeroAugment;
 
   let carryOverlap: number;
   if (comp.carries.size === 0 && domCarries.size === 0) {
@@ -195,19 +286,37 @@ function compareToArchetype(
     carryOverlap = inter / Math.min(comp.carries.size, domCarries.size);
   }
 
-  const cont  = containmentSmall(comp.units, repUnits);
-  const jac   = jaccard(comp.units, repUnits);
-  const score = UNIT_WEIGHT * cont + JACCARD_WEIGHT * jac + CARRY_WEIGHT * carryOverlap;
+  const { containment, jaccard } = weightedOverlap(comp, repUnits);
+  const score = UNIT_WEIGHT * containment + JACCARD_WEIGHT * jaccard + CARRY_WEIGHT * carryOverlap;
 
-  const hardFails =
-    (REQUIRE_DUP_CLASS         && !dupMatch                        ? 1 : 0) +
-    (REQUIRE_COPY_CLASS        && !copyMatch                       ? 1 : 0) +
-    (REQUIRE_HERO_AUGMENT_CLASS && !heroAugmentMatch                ? 1 : 0) +
-    (REQUIRE_CARRY             && carryOverlap < MIN_CARRY_OVERLAP ? 1 : 0) +
-    (cont < MIN_CONTAINMENT                                        ? 1 : 0) +
-    (jac  < MIN_JACCARD                                            ? 1 : 0);
+  const fails: string[] = [];
+  // Conflict-only: fail iff both sides roll for hits and the hit sets share
+  // nothing. Subset/superset/overlap all pass (missed or extra hits pool).
+  if (REQUIRE_DUP_CLASS && comp.carryGrade3.size > 0 && domGrade3.size > 0) {
+    let shared = 0;
+    for (const u of comp.carryGrade3) if (domGrade3.has(u)) shared++;
+    if (shared === 0) fails.push('grade3_conflict');
+  }
+  if (REQUIRE_COPY_CLASS && comp.copySig !== domCopy) fails.push('copy_class');
+  if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== domHeroAugment) fails.push('hero_augment');
+  if (REQUIRE_CARRY && carryOverlap < MIN_CARRY_OVERLAP) fails.push('carry_overlap');
+  if (containment < MIN_CONTAINMENT) fails.push('containment');
+  if (jaccard < MIN_JACCARD) fails.push('jaccard');
+  if (score < SCORE_THRESHOLD) fails.push('score');
 
-  return { shouldMerge: score >= SCORE_THRESHOLD && hardFails === 0, score };
+  return { shouldMerge: fails.length === 0, score, containment, jaccard, carryOverlap, fails };
+}
+
+/**
+ * Explain a pairwise comparison: score parts + failed guards of `a` against a
+ * single-member archetype seeded by `b`. Debug/eval helper ("why don't these
+ * two comps merge?") — the production path compares against accumulated
+ * archetypes, but a pairwise verdict is what a human is usually asking about.
+ */
+export function debugCompare(a: CompProfile, b: CompProfile): CompareResult {
+  const acc = makeAcc(b.setNumber);
+  addToAcc(acc, b);
+  return compareToArchetype(a, acc);
 }
 
 // ── Accumulator ops ───────────────────────────────────────────────────────────
@@ -217,10 +326,12 @@ function makeAcc(setNumber: number): ArchetypeAcc {
     compIds: [],
     setNumber,
     weightedFreq: new Map(),
+    weightAcc: new Map(),
     totalWeight: 0,
     carryFreq: new Map(),
     totalComps: 0,
-    dupSigCounts: new Map(),
+    grade3Freq: new Map(),
+    grade3Members: 0,
     copySigCounts: new Map(),
     heroAugmentSigCounts: new Map(),
   };
@@ -233,11 +344,17 @@ function addToAcc(acc: ArchetypeAcc, comp: CompProfile): void {
   acc.totalWeight += w;
   for (const u of comp.units) {
     acc.weightedFreq.set(u, (acc.weightedFreq.get(u) ?? 0) + w);
+    acc.weightAcc.set(u, (acc.weightAcc.get(u) ?? 0) + w * unitWeight(comp, u));
   }
   for (const c of comp.carries) {
     acc.carryFreq.set(c, (acc.carryFreq.get(c) ?? 0) + 1);
   }
-  acc.dupSigCounts.set(comp.duplicateSig, (acc.dupSigCounts.get(comp.duplicateSig) ?? 0) + 1);
+  if (comp.carryGrade3.size > 0) {
+    acc.grade3Members += 1;
+    for (const u of comp.carryGrade3) {
+      acc.grade3Freq.set(u, (acc.grade3Freq.get(u) ?? 0) + 1);
+    }
+  }
   acc.copySigCounts.set(comp.copySig, (acc.copySigCounts.get(comp.copySig) ?? 0) + 1);
   acc.heroAugmentSigCounts.set(
     comp.heroAugmentSig,
@@ -245,15 +362,46 @@ function addToAcc(acc: ArchetypeAcc, comp: CompProfile): void {
   );
 }
 
+function mergeCounts(dst: Map<string, number>, src: Map<string, number>): void {
+  for (const [k, v] of src) dst.set(k, (dst.get(k) ?? 0) + v);
+}
+
+/** Fold every aggregate of `src` into `dst` (fold pass). */
+function mergeAccInto(dst: ArchetypeAcc, src: ArchetypeAcc): void {
+  dst.compIds.push(...src.compIds);
+  dst.totalComps += src.totalComps;
+  dst.totalWeight += src.totalWeight;
+  mergeCounts(dst.weightedFreq, src.weightedFreq);
+  mergeCounts(dst.weightAcc, src.weightAcc);
+  mergeCounts(dst.carryFreq, src.carryFreq);
+  mergeCounts(dst.grade3Freq, src.grade3Freq);
+  dst.grade3Members += src.grade3Members;
+  mergeCounts(dst.copySigCounts, src.copySigCounts);
+  mergeCounts(dst.heroAugmentSigCounts, src.heroAugmentSigCounts);
+}
+
+/** An archetype's accumulated state viewed as a comparable profile (fold pass). */
+function accProfile(acc: ArchetypeAcc): CompProfile {
+  const rep = getRepUnits(acc);
+  return {
+    compId: acc.compIds[0] ?? -1,
+    setNumber: acc.setNumber,
+    units: new Set(rep.keys()),
+    unitWeights: rep,
+    carries: getDomCarries(acc),
+    carryGrade3: getDomGrade3(acc),
+    copySig: electDominant(acc.copySigCounts),
+    heroAugmentSig: electDominant(acc.heroAugmentSigCounts),
+    boardCount: acc.totalWeight,
+  };
+}
+
 function archetypeLabel(acc: ArchetypeAcc): string {
   const dom = getDomCarries(acc);
   const base = [...dom].sort().join('|') || 'no_carry';
   // A duplicate-copy-augment or hero-augment archetype is distinct from the
   // classic build even with identical carries. Because meta_comp IS this label
-  // and every downstream reader groups on it, both classes must be encoded HERE
-  // — the guards keep them in separate accumulators during clustering, but if
-  // two accumulators produce the same carry label they'd collapse back into one
-  // archetype on display otherwise.
+  // and every downstream reader groups on it, both classes must be encoded HERE.
   // Marker stays parseable: "<carries>##dup:<doubled-unit-ids>##aug:<champId>".
   const domCopy = electDominant(acc.copySigCounts);
   const domHeroAugment = electDominant(acc.heroAugmentSigCounts);
@@ -269,14 +417,18 @@ function archetypeLabel(acc: ArchetypeAcc): string {
  * Group comp profiles into carry archetypes.
  *
  * Comps are processed most-populated first so the most-observed variant anchors
- * each archetype. Each comp is assigned to the best-scoring existing archetype
- * that passes all hard-fail guards, or starts a new one.
+ * each archetype. Each comp is assigned to the best-scoring archetype that
+ * passes all hard-fail guards, or starts a new one; a fold pass then merges
+ * archetypes that greedy ordering stranded, and colliding labels are
+ * disambiguated (see file header).
  *
  * @returns `assignments` (compId → label) and `archetypes` (label → compIds).
  *   A comp always appears in exactly one archetype.
  */
 export function mergeComps(profiles: CompProfile[]): MergeResult {
-  if (profiles.length === 0) return { assignments: new Map(), archetypes: new Map() };
+  if (profiles.length === 0) {
+    return { assignments: new Map(), archetypes: new Map(), archetypeProfiles: new Map() };
+  }
 
   const sorted = [...profiles].sort(
     (a, b) => b.boardCount - a.boardCount || a.compId - b.compId,
@@ -284,22 +436,21 @@ export function mergeComps(profiles: CompProfile[]): MergeResult {
 
   const accs: ArchetypeAcc[] = [];
 
+  // ── Pass 1: greedy assignment to the best guard-passing archetype. ──────────
   for (const comp of sorted) {
     let bestIdx = -1;
     let bestScore = -Infinity;
-    let bestShouldMerge = false;
 
     for (let i = 0; i < accs.length; i++) {
       if (accs[i].setNumber !== comp.setNumber) continue;
-      const { shouldMerge, score } = compareToArchetype(comp, accs[i]);
-      if (score > bestScore) {
-        bestScore = score;
+      const r = compareToArchetype(comp, accs[i]);
+      if (r.shouldMerge && r.score > bestScore) {
+        bestScore = r.score;
         bestIdx   = i;
-        bestShouldMerge = shouldMerge;
       }
     }
 
-    if (bestShouldMerge && bestIdx >= 0) {
+    if (bestIdx >= 0) {
       addToAcc(accs[bestIdx], comp);
     } else {
       const acc = makeAcc(comp.setNumber);
@@ -308,16 +459,133 @@ export function mergeComps(profiles: CompProfile[]): MergeResult {
     }
   }
 
-  const assignments = new Map<number, string>();
-  const archetypes  = new Map<string, number[]>();
+  // ── Pass 2: fold stranded fragments into larger compatible archetypes. ──────
+  const order = accs
+    .map((_, i) => i)
+    .sort((a, b) => accs[a].totalWeight - accs[b].totalWeight);
+  const alive = accs.map(() => true);
 
-  for (const acc of accs) {
-    const label = archetypeLabel(acc);
-    for (const compId of acc.compIds) assignments.set(compId, label);
-    const existing = archetypes.get(label);
-    if (existing) existing.push(...acc.compIds);
-    else archetypes.set(label, [...acc.compIds]);
+  for (const i of order) {
+    if (!alive[i]) continue;
+    const self = accProfile(accs[i]);
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+
+    for (let j = 0; j < accs.length; j++) {
+      if (j === i || !alive[j]) continue;
+      if (accs[j].setNumber !== accs[i].setNumber) continue;
+      if (accs[j].totalWeight < accs[i].totalWeight) continue; // fold small → large only
+      const r = compareToArchetype(self, accs[j]);
+      if (r.shouldMerge && r.score > bestScore) {
+        bestScore = r.score;
+        bestIdx   = j;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      mergeAccInto(accs[bestIdx], accs[i]);
+      alive[i] = false;
+    }
   }
 
-  return { assignments, archetypes };
+  // ── Pass 3: labels, disambiguating collisions. ──────────────────────────────
+  const byLabel = new Map<string, ArchetypeAcc[]>();
+  for (let i = 0; i < accs.length; i++) {
+    if (!alive[i]) continue;
+    const label = archetypeLabel(accs[i]);
+    const group = byLabel.get(label);
+    if (group) group.push(accs[i]);
+    else byLabel.set(label, [accs[i]]);
+  }
+
+  const assignments = new Map<number, string>();
+  const archetypes  = new Map<string, number[]>();
+  const archetypeProfiles = new Map<string, CompProfile>();
+
+  for (const [label, group] of byLabel) {
+    group.sort(
+      (a, b) => b.totalWeight - a.totalWeight || (a.compIds[0] ?? 0) - (b.compIds[0] ?? 0),
+    );
+    for (let idx = 0; idx < group.length; idx++) {
+      const acc = group[idx];
+      const final = idx === 0 ? label : `${label}##k:${acc.compIds[0]}`;
+      for (const compId of acc.compIds) assignments.set(compId, final);
+      archetypes.set(final, [...acc.compIds]);
+      archetypeProfiles.set(final, accProfile(acc));
+    }
+  }
+
+  return { assignments, archetypes, archetypeProfiles };
+}
+
+// ── Tail assignment ───────────────────────────────────────────────────────────
+
+/**
+ * Assign-only labeling for sub-floor comps ("the tail"). Missed-hit boards
+ * fragment across many exact signatures, so they disproportionately sit below
+ * the merge sample floor — excluding them survivorship-tilts every archetype's
+ * pooled stats. This labels them against the FROZEN post-merge profiles
+ * (`MergeResult.archetypeProfiles`): it can never create an archetype or shift
+ * one's profile, so a wrong null just leaves a comp unlabeled.
+ *
+ * A tail comp has no itemization data (fetching participant_units for tens of
+ * thousands of tiny comps is what the merge floor exists to avoid), so:
+ *   - carries are proxied by PRESENCE: the board must field the archetype's
+ *     dominant carries (a missed-hit board still fields Lulu/Jax at 1–2★; a
+ *     different line doesn't) — same MIN_CARRY_OVERLAP bar;
+ *   - `comp.carryGrade3` should hold the comp's FULL 3★ set (itemization
+ *     unknown); the conflict-only rule still applies;
+ *   - `comp.heroAugmentSig` is '' — the tail only ever joins classic
+ *     archetypes, never a hero-augment one;
+ *   - the score bar is SCORE_THRESHOLD + MERGE_ASSIGN_MARGIN to offset the
+ *     weaker carry evidence.
+ *
+ * @returns the best passing archetype label, or null to leave unlabeled.
+ */
+export function assignTail(
+  comp: CompProfile,
+  archetypes: ReadonlyMap<string, CompProfile>,
+): string | null {
+  let bestLabel: string | null = null;
+  let bestScore = -Infinity;
+
+  for (const [label, arch] of archetypes) {
+    if (arch.setNumber !== comp.setNumber) continue;
+
+    // Carry proxy: containment of the archetype's dominant carries in the
+    // board — restricted to carries the archetype itself fields in its UNIT
+    // set. Off-board carriers (e.g. the Mecha summon holds the comp's items
+    // but is excluded from unit signatures) prove nothing by their absence.
+    let carryOverlap = 1;
+    let checkable = 0;
+    let present = 0;
+    for (const c of arch.carries) {
+      if (!arch.units.has(c)) continue;
+      checkable++;
+      if (comp.units.has(c)) present++;
+    }
+    if (checkable > 0) carryOverlap = present / checkable;
+    if (REQUIRE_CARRY && carryOverlap < MIN_CARRY_OVERLAP) continue;
+
+    if (REQUIRE_DUP_CLASS && comp.carryGrade3.size > 0 && arch.carryGrade3.size > 0) {
+      let shared = 0;
+      for (const u of comp.carryGrade3) if (arch.carryGrade3.has(u)) shared++;
+      if (shared === 0) continue;
+    }
+    if (REQUIRE_COPY_CLASS && comp.copySig !== arch.copySig) continue;
+    if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== arch.heroAugmentSig) continue;
+
+    const { containment, jaccard } = weightedOverlap(comp, arch.unitWeights);
+    if (containment < MIN_CONTAINMENT || jaccard < MIN_JACCARD) continue;
+
+    const score = UNIT_WEIGHT * containment + JACCARD_WEIGHT * jaccard + CARRY_WEIGHT * carryOverlap;
+    if (score < SCORE_THRESHOLD + ASSIGN_MARGIN) continue;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestLabel = label;
+    }
+  }
+
+  return bestLabel;
 }

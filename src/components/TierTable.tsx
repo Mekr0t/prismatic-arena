@@ -33,6 +33,19 @@ function CompRow({ row }: { row: CompRowVM }) {
           {row.identity.displayName ?? '—'}
         </span>
         {tag && <span className={`rr-tag ${archetypeClass(archetype)}`}>{tag}</span>}
+        {row.identity.dupUnits.length > 0 && (
+          <span
+            className="rr-tag tag-fast"
+            title="Duplicate-augment build — fields two copies of these units"
+          >
+            Augment: 2× {row.identity.dupUnits.join(', ')}
+          </span>
+        )}
+        {row.identity.heroAugmentUnit && (
+          <span className="rr-tag tag-reroll" title="Hero-augment build">
+            {row.identity.heroAugmentUnit} Hero Aug
+          </span>
+        )}
       </div>
       <ExampleTeam team={row.exampleTeam} />
       <StatCell row={row} />

@@ -58,8 +58,12 @@ export interface CompIdentityVM {
   archetype: string | null; // 1cost_reroll | 2cost_reroll | 3cost_reroll | fast8 | fast9 | standard
   displayName: string | null; // computed "[trait] [carry1] [carry2]"; stored name wins when set
   signature: string; // raw `a:…|t:…|c:…` — debug tooltip only
-  carries: CarryPortraitVM[]; // clustering order: primary first
-  keyTraits: KeyTraitChipVM[]; // most-invested first
+  /** Archetype rows: the merge label's dominant itemized carries (cost desc).
+   *  Unlabeled singletons / no-carry archetypes: the rep's 3★ set. */
+  carries: CarryPortraitVM[];
+  keyTraits: KeyTraitChipVM[]; // most-invested first (backfilled from the example team)
+  dupUnits: string[]; // duplicate-copy augment units (label ##dup:), resolved names
+  heroAugmentUnit: string | null; // hero-augment carry name (label ##aug:)
 }
 
 export interface CompRowVM {

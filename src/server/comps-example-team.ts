@@ -378,6 +378,12 @@ export async function loadExampleTeams(
             mUnits = c.units;
           }
         const meta = cat.trait(traitId);
+        // Zero-breakpoint traits are per-unit marker pseudo-traits (e.g. Miss
+        // Fortune's "Choose Trait" chooser, TFT17_MissFortuneUndeterminedTrait)
+        // — not board traits. Never render them in the strip or let them name
+        // a comp; the trait she actually chose is reported separately by the
+        // API and counts normally.
+        if (meta.breakpoints.length === 0) continue;
         // Recompute from CDragon breakpoints — the stored active_style is the
         // Riot API's own tier index and can be 0 for traits that don't follow
         // the standard bronze/silver/gold pattern (e.g. Stargazer). Using CDragon

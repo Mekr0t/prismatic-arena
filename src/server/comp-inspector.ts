@@ -16,11 +16,12 @@
 // (patch, region, rank_bucket) row for each comp: for judging the grouping, unit
 // and carry composition matters more than any single bucket's numbers.
 //
-// FLOORED to merge's input floor. The inspector shows only comps whose best
-// single-bucket sample reaches the floor — the same set merge currently labels
-// (~tier-list-sized). Without this it renders the entire historical long tail,
-// INCLUDING stale labels left in meta_comp from before merge was filtered, which
-// is what hung the page.
+// FLOORED to merge's input floor. Merge labels the sub-floor tail too (an
+// assign-only pass — see stages/merge.ts), but the inspector shows only the
+// comps that SHAPED the archetype profiles (best single-bucket sample at or
+// above the floor, ~tier-list-sized). Rendering the tens of thousands of
+// assigned tail members is what would hang the page, and they carry no
+// grouping signal worth eyeballing.
 
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
@@ -54,7 +55,7 @@ export interface InspectorMemberVM {
 }
 
 export interface InspectorArchetypeVM {
-  label: string; // meta_comp: '<carryIds>[##dup:<doubledIds>][##aug:<champId>]'
+  label: string; // meta_comp: '<carryIds>[##dup:<doubledIds>][##aug:<champId>][##k:<anchorCompId>]'
   carryNames: string[]; // carry section of the label, resolved to unit names
   dupUnits: string[]; // units doubled via the copy augment ([] for a classic build)
   heroAugmentUnit: string | null; // hero-augment carry name, null for a non-augment build

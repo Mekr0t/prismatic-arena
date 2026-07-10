@@ -1,0 +1,14 @@
+{
+  "doc": "Labeled comp pairs for scripts/merge-eval.ts. expect: 'merge' = same archetype, 'split' = must stay separate. Comp ids come from /admin/inspector (member rows) or the pair-candidates listing. Seeded 2026-07-10 from live set-17 data, mirroring the /photos board-pair semantics; extend as new cases appear.",
+  "pairs": [
+    { "a": 140935, "b": 142011, "expect": "merge", "note": "Lulu line: full hit (Jax/Lulu/Milio/Pantheon 3*) vs only-Lulu hit — photo pair 5" },
+    { "a": 140935, "b": 142459, "expect": "merge", "note": "Lulu line: full hit vs no hits at all — misses pool into line EV" },
+    { "a": 624288, "b": 141127, "expect": "merge", "note": "Lulu line: different secondary hits (Jax/Lulu/Pantheon vs Jax/Milio) — photo pair 4" },
+    { "a": 140839, "b": 140936, "expect": "merge", "note": "Fiora/Kindred/Yi/TK line: two biggest exact-board variants — unit variation, photo pair 3" },
+    { "a": 638243, "b": 140839, "expect": "merge", "note": "Fiora line: incidental RekSai 3* board vs the classic line — photo pair 1" },
+    { "a": 140839, "b": 627271, "expect": "merge", "note": "Fiora line: doubled 4-cost Master Yi is a bench copy, not the duplicate augment — same line" },
+    { "a": 613515, "b": 140914, "expect": "split", "note": "Ornn/Samira duplicate-augment build (2x 3-costs) vs the Space Groove classic line" },
+    { "a": 142937, "b": 627314, "expect": "split", "note": "Lulu line (full hit) vs Jax hero-augment archetype" },
+    { "a": 140839, "b": 140941, "expect": "split", "note": "Fiora/Kindred/Yi/TK vs Jhin/Nunu/TK/Xayah — different lines" }
+  ]
+}

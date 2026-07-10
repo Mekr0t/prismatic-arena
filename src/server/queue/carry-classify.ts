@@ -121,7 +121,9 @@ export interface BucketCarry {
   fullyItemizedRate: number;
 
   /** Share of boards where this unit ranks in the top TOP_ITEM_SLOTS by completed
-   *  item count (secondary signal, 0..1). */
+   *  item count with at least one completed item (secondary signal, 0..1).
+   *  Feeds the merge stage's fallback-carry path for comps that never fully
+   *  itemize (dead / missed-hit boards). */
   topItemizedRate: number;
 
   /** True when fullyItemizedRate >= CARRY_FULL_RATE — the merge stage uses this
@@ -203,7 +205,10 @@ export function classifyCarries(rows: RawUnitItem[], totalBoards: number): Bucke
         else a.itemSets.set(key, { count: 1, items: done }); // preserve original order
       }
 
-      if (rank < TOP_ITEM_SLOTS) a.topItemizedBoards += 1;
+      // A rank slot only counts with at least one completed item — "top
+      // itemized" on an itemless board is meaningless noise, and the merge
+      // stage uses this rate as a fallback carry signal.
+      if (rank < TOP_ITEM_SLOTS && done.length > 0) a.topItemizedBoards += 1;
     }
   }
 
