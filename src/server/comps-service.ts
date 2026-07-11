@@ -85,6 +85,9 @@ const BUCKET_ORDER = [
   'iron',
 ];
 const NICHE_LIMIT = 100; // cap the niche list so a thin meta's long tail stays bounded
+// A 3★ above this cost is variance, not a win condition, so it never earns a
+// board the archetype's representative slot (reroll targets are cost 1–3).
+const REROLL_MAX_COST = 3;
 
 // The tier floor, applied to the POOLED archetype sample (Σ n across members in
 // the selected bucket) — same env knob the trend-tier writer uses per comp.
@@ -370,13 +373,20 @@ export function buildArchetypeRow(
   const pooled = poolStats(members);
 
   // Representative = the most complete hit-state with a usable sample, where
-  // "hit" means a 3★ on one of the LABEL'S CARRIES — the units the line
-  // actually rolls for. A lottery 3★ on a fast-8/9 line (1%-share triple-hit
-  // boards) is luck, not identity, and must not become the archetype's face;
-  // with no carry hits anywhere, this degrades to the most-played board.
-  // Members below max(5, 5% of pooled n) are only eligible when nothing
-  // bigger exists (all-tail archetypes).
-  const labelCarries = new Set(parseLabelKey(members[0].gkey)?.carryIds ?? []);
+  // "hit" means a 3★ on a REROLL-COST label carry — a unit the line actually
+  // rolls for. Only cost ≤ REROLL_MAX_COST carries count: a 3★ 4/5-cost is a
+  // once-in-a-thousand fluke, never the intended win condition, so it must not
+  // earn a board the archetype's face (that's how "Dark Star Jhin Karma" ended
+  // up showing a 3★ Karma). A lottery 3★ on a fast-8/9 line is likewise luck,
+  // not identity; with no reroll-carry hits anywhere this degrades to the
+  // most-played board. Members below max(5, 5% of pooled n) are only eligible
+  // when nothing bigger exists (all-tail archetypes).
+  const labelCarries = new Set(
+    (parseLabelKey(members[0].gkey)?.carryIds ?? []).filter((id) => {
+      const cost = cat.unit(id).cost;
+      return cost >= 1 && cost <= REROLL_MAX_COST;
+    }),
+  );
   const carryStars = (m: CompStatRow): number =>
     asCarries(m.carries).filter((c) => labelCarries.has(c.character_id)).length;
   const minRepN = Math.max(5, Math.ceil(pooled.n * 0.05));

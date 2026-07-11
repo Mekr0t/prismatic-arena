@@ -15,6 +15,7 @@ import type {
   DetailUnitVM,
   DetailVariantVM,
   DetailBuildVM,
+  DetailTrendPointVM,
   CarryPortraitVM,
   KeyTraitChipVM,
 } from '@/server/comps-types';
@@ -161,12 +162,109 @@ function BuildRow({ build }: { build: DetailBuildVM }) {
   );
 }
 
+/** Dependency-free SVG trend: avg placement as a line in the upper zone
+ *  (inverted — up is better) with the value printed at every dot, games per
+ *  period as bars in the lower zone with counts, dates along the bottom.
+ *  Self-explanatory without hover; when there are many points, labels thin
+ *  out to every k-th column. */
+function TrendChart({ trend }: { trend: DetailTrendPointVM[] }) {
+  if (trend.length < 2) {
+    return (
+      <p className="cd-note">
+        Not enough daily snapshots yet — the trend fills in as the trend-tier stage keeps
+        running.
+      </p>
+    );
+  }
+  const W = 560;
+  const H = 240;
+  const PAD_X = 34;
+  const LINE_TOP = 34; // room for the avg label above the highest dot
+  const LINE_BOT = 108; // upper zone: the avg-placement line
+  const BAR_BOT = 206; // lower zone: the games bars
+  const BAR_MAX = 72;
+  const DATE_Y = 228;
+
+  const xs = (i: number) => PAD_X + (i * (W - 2 * PAD_X)) / (trend.length - 1);
+  const avgs = trend.map((t) => t.avgPlacement);
+  const lo = Math.min(...avgs) - 0.2;
+  const hi = Math.max(...avgs) + 0.2;
+  const ys = (v: number) => LINE_TOP + ((v - lo) / (hi - lo)) * (LINE_BOT - LINE_TOP);
+  const maxGames = Math.max(...trend.map((t) => t.games), 1);
+  const barW = Math.min(Math.max(((W - 2 * PAD_X) / trend.length) * 0.45, 6), 42);
+  // Thin out per-column labels when the series grows (always label the last).
+  const labelEvery = Math.ceil(trend.length / 8);
+  const labeled = (i: number) => i % labelEvery === 0 || i === trend.length - 1;
+  const tip = (t: DetailTrendPointVM): string =>
+    `${t.date}: ${t.games.toLocaleString()} games · avg ${fmtAvg(t.avgPlacement)} · ` +
+    `top 4 ${fmtPct(t.top4Rate, 0)} · play ${fmtPct(t.playRate, 1)}`;
+  const points = trend
+    .map((t, i) => `${xs(i).toFixed(1)},${ys(t.avgPlacement).toFixed(1)}`)
+    .join(' ');
+
+  return (
+    <div className="cd-trend">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Average placement and games per day">
+        <text className="cd-trend-zone" x={PAD_X - 26} y={LINE_TOP - 14}>
+          AVG PLACE
+        </text>
+        <text className="cd-trend-zone" x={PAD_X - 26} y={BAR_BOT - BAR_MAX - 10}>
+          GAMES
+        </text>
+        {trend.map((t, i) => {
+          const bh = Math.max((t.games / maxGames) * BAR_MAX, 2);
+          return (
+            <g key={t.date}>
+              <rect
+                className="cd-trend-bar"
+                x={xs(i) - barW / 2}
+                y={BAR_BOT - bh}
+                width={barW}
+                height={bh}
+              >
+                <title>{tip(t)}</title>
+              </rect>
+              {labeled(i) && (
+                <text className="cd-trend-games" x={xs(i)} y={BAR_BOT - bh - 5}>
+                  {t.games.toLocaleString()}
+                </text>
+              )}
+              {labeled(i) && (
+                <text className="cd-trend-date" x={xs(i)} y={DATE_Y}>
+                  {t.date.slice(5)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        <polyline className="cd-trend-line" points={points} />
+        {trend.map((t, i) => (
+          <g key={t.date}>
+            <circle className="cd-trend-dot" cx={xs(i)} cy={ys(t.avgPlacement)} r={3.5}>
+              <title>{tip(t)}</title>
+            </circle>
+            {labeled(i) && (
+              <text className="cd-trend-avg" x={xs(i)} y={ys(t.avgPlacement) - 9}>
+                {fmtAvg(t.avgPlacement)}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+      <p className="cd-note">
+        Each column is one snapshot period: the line is that period&rsquo;s average placement
+        (higher on the chart = better), the bars are how many games it was played.
+      </p>
+    </div>
+  );
+}
+
 export function CompDetail({ detail, backHref }: { detail: CompDetailVM; backHref: string }) {
   const id = detail.identity;
   const m = detail.metrics;
   // Placement distribution is the universal default; hit states take over as
   // the opening tab only for hit-shaped (reroll) lines.
-  const [panel, setPanel] = useState<'placement' | 'hits'>(
+  const [panel, setPanel] = useState<'placement' | 'hits' | 'trend'>(
     detail.hitStatesDefault ? 'hits' : 'placement',
   );
   const maxPlacementShare = Math.max(...detail.placements.map((p) => p.share), 0.0001);
@@ -259,9 +357,18 @@ export function CompDetail({ detail, backHref }: { detail: CompDetailVM; backHre
             >
               Hit states
             </button>
+            <button
+              type="button"
+              className={panel === 'trend' ? 'active' : ''}
+              onClick={() => setPanel('trend')}
+            >
+              Trend
+            </button>
           </div>
 
-          {panel === 'placement' ? (
+          {panel === 'trend' ? (
+            <TrendChart trend={detail.trend} />
+          ) : panel === 'placement' ? (
             <div className="cd-bands cd-pl">
               {detail.placements.map((p) => (
                 <div className="cd-band" key={p.placement}>

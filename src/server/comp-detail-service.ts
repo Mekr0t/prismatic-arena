@@ -33,6 +33,7 @@ import type {
   DetailVariantVM,
   DetailLevelBandVM,
   DetailPlacementVM,
+  DetailTrendPointVM,
   DetailBuildVM,
   DetailBuildSetVM,
   DetailBoardVM,
@@ -101,6 +102,13 @@ interface PlacementRow {
   placement: number;
   boards: number;
 }
+interface TrendRow {
+  date: string;
+  n: number;
+  placement_sum: number;
+  top4: number;
+  bucket_total: number;
+}
 interface CarryItemRow {
   board_id: string; // bigint
   placement: number;
@@ -159,7 +167,7 @@ export async function getCompDetail(
   const scope = [memberIds, patchId, region, rankBucket] as const;
 
   // ── Board-level aggregations (SQL-side, small results). ─────────────────────
-  const [unitStarRows, levelRows, placementRows, carryItemRows] = await Promise.all([
+  const [unitStarRows, levelRows, placementRows, trendRows, carryItemRows] = await Promise.all([
     query<UnitStarRow>(
       `WITH b AS (
          SELECT mp.id, mp.placement
@@ -207,6 +215,22 @@ export async function getCompDetail(
           AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
           AND m.queue_id = 1100
         GROUP BY mp.placement`,
+      [...scope],
+    ),
+    // Daily snapshots (comp_stat_trends stores CUMULATIVE sufficient stats per
+    // day; deltas between consecutive dates are computed below). bucket_total
+    // is identical on every row of a (patch, region, bucket, date) — MAX picks it.
+    query<TrendRow>(
+      `SELECT snapshot_date::text AS date,
+              SUM(n)::int AS n,
+              SUM(placement_sum)::float8 AS placement_sum,
+              SUM(top4_count)::int AS top4,
+              MAX(bucket_total)::int AS bucket_total
+         FROM comp_stat_trends
+        WHERE comp_id = ANY($1::int[])
+          AND patch_id = $2 AND region = $3 AND rank_bucket = $4
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date`,
       [...scope],
     ),
     carryIds.length === 0
@@ -436,6 +460,28 @@ export async function getCompDetail(
   const noHitN = varAccs.get('')?.n ?? 0;
   const hitStatesDefault = 1 - rate(noHitN, header.metrics.n) >= HITS_DEFAULT_MIN_SHARE;
 
+  // ── Trend: deltas between consecutive daily snapshots. ──────────────────────
+  // The first snapshot counts from patch start; periods where nothing was
+  // crawled (dn <= 0, e.g. identical back-to-back snapshots) are skipped.
+  const trend: DetailTrendPointVM[] = [];
+  let prev: TrendRow | null = null;
+  for (const row of trendRows) {
+    const dn = row.n - (prev?.n ?? 0);
+    if (dn > 0) {
+      const dPlacement = row.placement_sum - (prev?.placement_sum ?? 0);
+      const dTop4 = row.top4 - (prev?.top4 ?? 0);
+      const dBucket = row.bucket_total - (prev?.bucket_total ?? 0);
+      trend.push({
+        date: row.date,
+        games: dn,
+        avgPlacement: dPlacement / dn,
+        top4Rate: rate(dTop4, dn),
+        playRate: dBucket > 0 ? dn / dBucket : 0,
+      });
+    }
+    prev = row;
+  }
+
   // ── Most-played exact boards, with example strips. ──────────────────────────
   const topMembers = [...members]
     .sort((a, b) => (b.n ?? 0) - (a.n ?? 0) || a.comp_id - b.comp_id)
@@ -494,6 +540,7 @@ export async function getCompDetail(
     unitsTable: units,
     levelBands,
     placements,
+    trend,
     variants,
     hitStatesDefault,
     builds,

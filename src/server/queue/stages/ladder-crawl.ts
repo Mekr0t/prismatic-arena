@@ -90,7 +90,18 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       if (enqueued >= CRAWL.maxPuuidsPerRun || fetchBudget <= 0) break;
 
       const count = Math.min(CRAWL.matchIdsPerPuuid, fetchBudget);
-      const matchIds = await riot.match.idsByPuuid(route, puuid, { count }, Priority.BATCH);
+      let matchIds: string[];
+      try {
+        matchIds = await riot.match.idsByPuuid(route, puuid, { count }, Priority.BATCH);
+      } catch (err) {
+        // One bad seed (malformed puuid, deleted account, etc.) must not abort
+        // the whole drain pass — that leaves every seed after it un-crawled too,
+        // and since it stays NULL it jumps back to the front next run, wedging
+        // the crawler on the same seed forever. Mark it crawled anyway and move on.
+        console.warn(`[ladder-crawl] skipping ${puuid}: ${(err as Error).message}`);
+        crawled.push(puuid);
+        continue;
+      }
 
       // Mark at enqueue (not at fetch completion): a selected player is "crawled"
       // for this window regardless of whether the fetch later succeeds, so a

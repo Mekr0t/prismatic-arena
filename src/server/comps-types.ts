@@ -184,6 +184,16 @@ export interface DetailPlacementVM {
   share: number; // boards / archetype boards
 }
 
+/** One trend period: the games added between two consecutive daily snapshots
+ *  (the first snapshot counts from patch start). */
+export interface DetailTrendPointVM {
+  date: string; // snapshot date (YYYY-MM-DD)
+  games: number; // boards added in this period
+  avgPlacement: number; // average placement of those boards
+  top4Rate: number;
+  playRate: number; // period boards / period bucket boards
+}
+
 export interface DetailBoardVM {
   compId: number;
   n: number;
@@ -204,6 +214,7 @@ export interface CompDetailVM {
   unitsTable: DetailUnitVM[]; // every unit above the sample floor, freq desc
   levelBands: DetailLevelBandVM[];
   placements: DetailPlacementVM[]; // 1st..8th histogram (always 8 entries)
+  trend: DetailTrendPointVM[]; // daily-snapshot deltas, oldest first
   variants: DetailVariantVM[]; // hit-state groups, n desc (capped + 'other')
   /** Whether the hit-states tab should be the default panel: true for
    *  hit-shaped lines (rerolls), false when hits are incidental. */

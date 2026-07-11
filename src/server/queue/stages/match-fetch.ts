@@ -41,7 +41,11 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
     if (!match) continue;
 
     await persistMatch(match); // idempotent — re-checks existence for race safety
-    for (const p of match.info.participants) discovered.add(p.puuid);
+    // AI-filled lobbies report bot participants with the literal puuid "BOT" —
+    // not a real account, and Riot 400s any match/league call made with it.
+    for (const p of match.info.participants) {
+      if (p.puuid !== 'BOT') discovered.add(p.puuid);
+    }
     stored += 1;
     ctx.setItems(stored);
   }

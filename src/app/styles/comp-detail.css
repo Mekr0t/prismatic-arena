@@ -281,6 +281,48 @@
   background: var(--text-dim);
   opacity: 0.45;
 }
+
+/* ── Trend chart ────────────────────────────────────────────────────────── */
+
+.cd-trend svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.cd-trend-bar {
+  fill: var(--text-dim);
+  opacity: 0.3;
+}
+.cd-trend-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.cd-trend-dot {
+  fill: var(--accent);
+}
+.cd-trend-avg {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+.cd-trend-games {
+  fill: var(--text-dim);
+  font-size: 12px;
+  text-anchor: middle;
+}
+.cd-trend-date {
+  fill: var(--text-dim);
+  font-size: 12px;
+  text-anchor: middle;
+}
+.cd-trend-zone {
+  fill: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  opacity: 0.8;
+}
 .cd-band-val {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
