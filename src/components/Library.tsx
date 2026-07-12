@@ -2,17 +2,10 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import type { LibraryData, LibUnit, LibTrait, LibItem, LibAugment, AugmentTier } from '@/server/library-data';
+import { RichText, richFirstLine } from '@/lib/rich-text';
+import { UnitStatsGrid } from '@/components/UnitStatsGrid';
 
 type Tab = 'units' | 'traits' | 'items' | 'augments';
-
-function stripDesc(raw: string | null): string {
-  if (!raw) return '';
-  return raw
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-}
 
 const BP_STYLE_NAME = ['', 'Bronze', 'Silver', 'Gold', 'Prismatic'];
 
@@ -31,18 +24,7 @@ const ROLE_LABEL: Record<string, string> = {
   HFighter:     'Fighter',
 };
 
-const STAT_ROWS: [string, string][] = [
-  ['HP', 'hp'],
-  ['AD', 'attackDamage'],
-  ['AP', 'abilityPower'],
-  ['Atk Speed', 'attackSpeed'],
-  ['Armor', 'armor'],
-  ['Magic Resist', 'magicResist'],
-  ['Range', 'range'],
-  ['Starting Mana', 'initialMana'],
-];
-
-type TooltipState = { text: string; x: number; y: number } | null;
+type TooltipState = { text?: string; trait?: LibTrait; x: number; y: number } | null;
 
 export default function Library({ data }: { data: LibraryData }) {
   const [tab, setTab] = useState<Tab>('units');
@@ -53,6 +35,14 @@ export default function Library({ data }: { data: LibraryData }) {
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.min(r.left, window.innerWidth - 252);
     setTooltip({ text, x, y: r.bottom + 6 });
+  }, []);
+
+  // Rich trait hover: full effect + all breakpoints (not just a first line).
+  const showTraitTooltip = useCallback((e: React.MouseEvent, trait: LibTrait | undefined) => {
+    if (!trait) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(r.left, window.innerWidth - 360);
+    setTooltip({ trait, x, y: r.bottom + 6 });
   }, []);
   const hideTooltip = useCallback(() => setTooltip(null), []);
   const [search, setSearch] = useState('');
@@ -267,7 +257,6 @@ export default function Library({ data }: { data: LibraryData }) {
 
             {tab === 'units' && (() => {
               const u = selected as LibUnit;
-              const desc = stripDesc(u.abilityDesc);
               return (
                 <>
                   <div className="lib-detail-hero">
@@ -287,10 +276,9 @@ export default function Library({ data }: { data: LibraryData }) {
                     <div className="lib-detail-traits">
                       {u.traits.map((tid) => {
                         const t = traitById.get(tid);
-                        const tip = t?.description ? stripDesc(t.description) : undefined;
                         return (
                           <span key={tid} className="chip"
-                            onMouseEnter={(e) => showTooltip(e, tip)}
+                            onMouseEnter={(e) => showTraitTooltip(e, t)}
                             onMouseLeave={hideTooltip}
                           >
                             {t?.iconUrl && <img src={t.iconUrl} className="chipimg" alt="" />}
@@ -308,29 +296,18 @@ export default function Library({ data }: { data: LibraryData }) {
                     </div>
                   )}
 
-                  {(u.abilityName || desc) && (
+                  {(u.abilityName || u.abilityDesc) && (
                     <div className="lib-section">
                       <div className="lib-section-label">Ability</div>
                       {u.abilityName && <div className="lib-ability-name">{u.abilityName}</div>}
-                      {desc && <div className="lib-desc">{desc}</div>}
+                      <RichText text={u.abilityDesc} className="lib-desc rt" />
                     </div>
                   )}
 
-                  {u.stats && STAT_ROWS.some(([, k]) => u.stats![k] != null) && (
+                  {u.stats && (
                     <div className="lib-section">
                       <div className="lib-section-label">Base Stats</div>
-                      <div className="lib-stats-grid">
-                        {STAT_ROWS.filter(([, k]) => u.stats![k] != null).map(([label, k]) => (
-                          <div key={k} className="lib-stat">
-                            <span className="lib-stat-k">{label}</span>
-                            <span className="lib-stat-v">
-                              {k === 'attackSpeed'
-                                ? (u.stats![k] as number).toFixed(2)
-                                : u.stats![k]}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                      <UnitStatsGrid stats={u.stats} />
                     </div>
                   )}
                 </>
@@ -339,26 +316,31 @@ export default function Library({ data }: { data: LibraryData }) {
 
             {tab === 'traits' && (() => {
               const t = selected as LibTrait;
-              const desc = stripDesc(t.description);
               return (
                 <>
                   <div className="lib-detail-hero">
                     {t.iconUrl && <img src={t.iconUrl} className="lib-detail-trait-icon" alt="" />}
                     <div className="lib-detail-name">{t.name}</div>
                   </div>
-                  {desc && <div className="lib-desc">{desc}</div>}
+                  <RichText text={t.description} className="lib-desc rt" />
                   {t.breakpoints.length > 0 && (
                     <div className="lib-section">
                       <div className="lib-section-label">Breakpoints</div>
-                      <div className="lib-bps">
+                      <div className="bp-list">
                         {t.breakpoints.map((bp) => {
                           const isUnique = t.breakpoints.length === 1;
                           return (
-                            <div key={bp.minUnits} className="lib-bp">
+                            <div key={bp.minUnits} className="bp-row">
                               <span className={`lib-bp-badge ${isUnique ? 'unique' : `s${bp.style}`}`}>
-                                {isUnique ? 'Unique' : BP_STYLE_NAME[bp.style]}
+                                {bp.minUnits}
                               </span>
-                              <span className="lib-bp-units">{bp.minUnits} units</span>
+                              {bp.effect ? (
+                                <RichText text={bp.effect} className="bp-eff rt" />
+                              ) : (
+                                <span className="bp-eff dim">
+                                  {isUnique ? 'Unique' : BP_STYLE_NAME[bp.style]}
+                                </span>
+                              )}
                             </div>
                           );
                         })}
@@ -371,7 +353,6 @@ export default function Library({ data }: { data: LibraryData }) {
 
             {tab === 'items' && (() => {
               const it = selected as LibItem;
-              const desc = stripDesc(it.description);
               return (
                 <>
                   <div className="lib-detail-hero">
@@ -384,14 +365,22 @@ export default function Library({ data }: { data: LibraryData }) {
                       <span className={`lib-kind-badge kind-${it.kind}`}>{it.kind}</span>
                     </div>
                   </div>
-                  {desc && <div className="lib-desc">{desc}</div>}
+                  {it.stats.length > 0 && (
+                    <div className="istat-list">
+                      {it.stats.map((s) => (
+                        <span key={s.label} className="istat">
+                          <b>{s.value}</b> {s.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <RichText text={it.description} className="lib-desc rt" />
                 </>
               );
             })()}
 
             {tab === 'augments' && (() => {
               const a = selected as LibAugment;
-              const desc = stripDesc(a.description);
               return (
                 <>
                   <div className="lib-detail-hero">
@@ -401,7 +390,7 @@ export default function Library({ data }: { data: LibraryData }) {
                     }
                     <div className="lib-detail-name">{a.name}</div>
                   </div>
-                  {desc && <div className="lib-desc">{desc}</div>}
+                  <RichText text={a.description} className="lib-desc rt" />
                 </>
               );
             })()}
@@ -410,8 +399,41 @@ export default function Library({ data }: { data: LibraryData }) {
       </div>
 
       {tooltip && (
-        <div className="lib-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
-          {tooltip.text}
+        <div
+          className={`lib-tooltip${tooltip.trait ? ' gd-tt-trait' : ''}`}
+          style={{ left: tooltip.x, top: tooltip.y }}
+        >
+          {tooltip.trait ? (
+            <>
+              <span className="gd-tt-name">{tooltip.trait.name}</span>
+              {tooltip.trait.description && (
+                <RichText text={tooltip.trait.description} className="gd-tt-desc rt" />
+              )}
+              {tooltip.trait.breakpoints.length > 0 && (
+                <div className="bp-list">
+                  {tooltip.trait.breakpoints.map((b, i) => {
+                    const isUnique = tooltip.trait!.breakpoints.length === 1;
+                    return (
+                      <div key={i} className="bp-row">
+                        <span className={`lib-bp-badge ${isUnique ? 'unique' : `s${b.style}`}`}>
+                          {b.minUnits}
+                        </span>
+                        {b.effect ? (
+                          <RichText text={b.effect} className="bp-eff rt" />
+                        ) : (
+                          <span className="bp-eff dim">
+                            {isUnique ? 'Unique' : BP_STYLE_NAME[b.style]}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            tooltip.text
+          )}
         </div>
       )}
     </div>

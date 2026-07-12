@@ -72,6 +72,48 @@ interface CDragonData {
   sets?: Record<string, CDragonSet>;
 }
 
+// Curated stat keys from an item's CDragon `effects` map → display label + kind.
+// `pct` values are inconsistent in the data — sometimes a fraction (AD 0.15 =
+// 15%), sometimes already a whole percent (AS 10 = 10%, CritChance 35 = 35%) —
+// so a value < 1 is treated as a fraction (×100) and ≥ 1 as an already-whole
+// percent. `flat` values (AP, Health, Armor, …) are point bonuses, no %. Keys
+// not listed are ability parameters (HealthThreshold, ShieldDuration), not stats.
+const ITEM_STAT_KEYS: Record<string, { label: string; kind: 'pct' | 'flat' }> = {
+  AD: { label: 'Attack Damage', kind: 'pct' },
+  AP: { label: 'Ability Power', kind: 'flat' },
+  Health: { label: 'Health', kind: 'flat' },
+  HealthMax: { label: 'Health', kind: 'flat' },
+  Armor: { label: 'Armor', kind: 'flat' },
+  MagicResist: { label: 'Magic Resist', kind: 'flat' },
+  AttackSpeed: { label: 'Attack Speed', kind: 'pct' },
+  AS: { label: 'Attack Speed', kind: 'pct' },
+  CritChance: { label: 'Crit Chance', kind: 'pct' },
+  CritDamage: { label: 'Crit Damage', kind: 'pct' },
+  LifeSteal: { label: 'Life Steal', kind: 'pct' },
+  Omnivamp: { label: 'Omnivamp', kind: 'pct' },
+  StatOmnivamp: { label: 'Omnivamp', kind: 'pct' },
+  Mana: { label: 'Mana', kind: 'flat' },
+  DamageAmp: { label: 'Damage Amp', kind: 'pct' },
+  DurabilityToGive: { label: 'Durability', kind: 'pct' },
+};
+
+/** Extract the curated stat bonuses from an item's effects, as an ordered list
+ *  ready for display. Empty when the item has no recognised stats. */
+function itemStats(effects: Record<string, number> | undefined): { label: string; value: string }[] {
+  if (!effects) return [];
+  const out: { label: string; value: string }[] = [];
+  for (const [key, rule] of Object.entries(ITEM_STAT_KEYS)) {
+    const raw = effects[key];
+    if (typeof raw !== 'number' || raw === 0) continue;
+    const value =
+      rule.kind === 'pct'
+        ? `+${Math.round(raw < 1 ? raw * 100 : raw)}%`
+        : `+${Math.round(raw)}`;
+    if (!out.some((o) => o.label === rule.label)) out.push({ label: rule.label, value });
+  }
+  return out;
+}
+
 function getRarity(icon: string): 'Silver' | 'Gold' | 'Prismatic' | null {
   if (!icon) return null;
   const basename = icon.split('/').pop() ?? '';
@@ -128,17 +170,20 @@ function pickCurrentSet(
   return { setNumber: num, champions: s.champions ?? [], traits: s.traits ?? [], augmentApiNames: s.augments ?? [], name: s.name };
 }
 
-function formatTraitDescription(t: CDragonTrait): string | null {
-  if (!t.desc) return null;
+// Splits a trait into its intro (the always-on bonus, → traits.description) and
+// one resolved effect string per breakpoint (→ breakpoints[].effect), so the UI
+// can show each breakpoint's actual effect beside its badge instead of a bare
+// unit count. Rows appear as <row> or <expandRow>; each resolves against its own
+// breakpoint variables.
+function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (string | null)[] } {
+  if (!t.desc) return { intro: null, rowTexts: [] };
   const effects = t.effects ?? [];
 
-  // Grab all <row>...</row> blocks
-  const rowMatches = Array.from(t.desc.matchAll(/<row>(.*?)<\/row>/gi));
-  const rows = rowMatches.map((m) => m[1]);
+  const rowRe = /<(?:expandRow|row)>([\s\S]*?)<\/(?:expandRow|row)>/gi;
+  const rows = Array.from(t.desc.matchAll(rowRe)).map((m) => m[1]);
 
-  // Build a merged effects map from all breakpoints for the intro paragraph.
-  // Constant teamwide values (e.g. TeamwideAS) appear in every breakpoint with the
-  // same value — using the first occurrence is correct and sufficient.
+  // Merged map across breakpoints for the intro paragraph (constant teamwide
+  // values repeat identically, so first occurrence wins).
   const introEffMap: Record<string, number> = {};
   for (const e of effects) {
     if (typeof e.minUnits === 'number' && !('MinUnits' in introEffMap))
@@ -149,31 +194,27 @@ function formatTraitDescription(t: CDragonTrait): string | null {
     }
   }
 
-  // Intro text before first <row> (Meeple has this)
-  const introHtml = t.desc.split(/<row>/i)[0] ?? '';
+  const introHtml = t.desc.split(/<(?:expandRow|row)>/i)[0] ?? '';
   const intro = resolveDesc(introHtml, introEffMap);
 
-  const lines: string[] = [];
-  if (intro && intro.trim()) lines.push(intro.trim());
-
-  // Build one line per breakpoint
-  for (let i = 0; i < rows.length; i++) {
-    const rowHtml = `<row>${rows[i]}</row>`;
-    const e = effects[i] ?? effects[effects.length - 1];
-
+  // One <row> per breakpoint (Meeple, Challenger) maps by index; a single
+  // <expandRow> (Conduit) is a TEMPLATE repeated for every breakpoint, resolved
+  // with each breakpoint's own variables. Build one effect string per breakpoint.
+  const template = rows.length === 1 && effects.length > 1 ? rows[0] : null;
+  const rowTexts = effects.map((e, i) => {
+    const rowHtml = template ?? rows[i];
+    if (rowHtml == null) return null;
     const effMap: Record<string, number> = {};
     if (typeof e.minUnits === 'number') effMap.MinUnits = e.minUnits;
-
     const vars = (e as any).variables ?? {};
-    for (const [k, v] of Object.entries(vars)) {
-      if (typeof v === 'number') effMap[k] = v;
-    }
-
+    for (const [k, v] of Object.entries(vars)) if (typeof v === 'number') effMap[k] = v;
     const line = resolveDesc(rowHtml, effMap);
-    if (line && line.trim()) lines.push(line.trim());
-  }
+    // The badge already shows the unit count, so drop a leading "(N)" the row
+    // sometimes repeats (e.g. Conduit's "(2) 1 Mana Regen").
+    return line ? line.replace(/^\(\d+\)\s*/, '') || null : null;
+  });
 
-  return lines.join('\n');
+  return { intro, rowTexts };
 }
 
 // Breakpoint metadata fields — not variable values.
@@ -231,6 +272,61 @@ function buildAbilityEffectsMap(
   return out;
 }
 
+// CommunityDragon wraps meaningful spans in semantic tags. We keep them as
+// compact «class:text» tokens (guillemets never appear in TFT text) so the
+// client can colour them; everything unknown is unwrapped to plain text. The
+// token grammar is parsed — never innerHTML'd — on the render side
+// (src/lib/rich-text.tsx), and the class set here must match the CSS there.
+const RICH_TAG_CLASS: Record<string, string> = {
+  physicaldamage: 'phys',
+  magicdamage: 'magic',
+  truedamage: 'true',
+  scalehealth: 'hp',
+  scalelevel: 'lvl',
+  scaleap: 'ap',
+  scalead: 'ad',
+  scalearmor: 'armor',
+  scalemr: 'armor',
+  scalemana: 'mana',
+  tftbonus: 'bonus',
+  tfthighlight: 'bonus',
+  tftkeyword: 'kw',
+  status: 'kw',
+  spellpassive: 'label',
+  spellactive: 'label',
+  tftpassive: 'label',
+  tftactive: 'label',
+  tftbold: 'bold',
+  rules: 'rules',
+  tftrules: 'rules',
+  tftitemrules: 'rules',
+  tftradiantitembonus: 'radiant',
+  tftshadowitembonus: 'shadow',
+  tftshadowitempenalty: 'shadow',
+};
+
+// CDragon embeds stat icons as %i:Name% next to a value to say WHAT the value is
+// / scales with. We can't render the icon, so map it to a short label emitted as
+// a «scale:LABEL» token — rendered muted (see .rt-scale), so it reads as a
+// secondary hint (Challenger "15% AS", Nami "… (AP)") rather than being mistaken
+// for a damage value in a coloured span. Unknown icons are dropped.
+const ICON_LABEL: Record<string, string> = {
+  scalead: 'AD',
+  tftbasead: 'AD',
+  scaleap: 'AP',
+  scaleas: 'AS',
+  scalehealth: 'HP',
+  scalearmor: 'Armor',
+  scalemr: 'MR',
+  scalerange: 'Range',
+  scaleda: 'Damage Amp',
+  scalesv: 'Omnivamp',
+  scaledr: 'Damage Reduction',
+  scalehpregen: 'HP Regen',
+  tftmanaregen: 'Mana Regen',
+  set14ampicon: 'Meeps', // reused icon asset; only Meeple uses it (the Meep count)
+};
+
 function resolveDesc(
   desc: string | null | undefined,
   effects: Record<string, number | string> | null | undefined,
@@ -247,7 +343,7 @@ function resolveDesc(
 
     const entry = Object.entries(eff).find(([k]) => k.toLowerCase() === varKey.toLowerCase());
     if (!entry) return ''; // unresolvable (obfuscated key, Modified*, etc.) — hide rather than show raw name
-    
+
     const val = entry[1];
     if (typeof val === 'string') {
       // Ability values are stored as full-precision strings (possibly "41/62/644" for multi-star).
@@ -267,19 +363,61 @@ function resolveDesc(
     return result === Math.floor(result) ? String(Math.floor(result)) : result.toFixed(1);
   });
 
-  const text = resolved
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/%i:[^%]+%/g, '')
+  // Preserve semantic markup as «class:text» tokens instead of flattening.
+  let out = resolved.replace(/<br\s*\/?>/gi, '\n');
+
+  // Drop <ShowIf.CONDITION>…</ShowIf.CONDITION> blocks — augment/variant-only
+  // additions that otherwise concatenate onto the base value (e.g. Viktor's
+  // "<ShowIf.…Augment…>5</…>4 seconds" rendering as "54 seconds"). ShowIfNot
+  // blocks are the DEFAULT branch, so their tags are merely unwrapped below.
+  let prevShow: string;
+  do {
+    prevShow = out;
+    out = out.replace(/<ShowIf\.[^>]*>[\s\S]*?<\/ShowIf\.[^>]*>/gi, '');
+  } while (out !== prevShow);
+
+  for (const [tag, cls] of Object.entries(RICH_TAG_CLASS)) {
+    const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
+    let prev: string;
+    do {
+      prev = out;
+      out = out.replace(re, (_m, inner) => `«${cls}:${inner}»`);
+    } while (out !== prev);
+  }
+
+  // Strip anything that can hollow out a token's content FIRST (icons, empty
+  // parens left by a stripped %i:…% icon, stray %), so the empty-token pass below
+  // sees the final inner value.
+  let text = out
+    .replace(/<[^>]+>/g, '')             // unwrap unknown/structural tags (maintext, showif, li, …)
+    .replace(/%i:([^%]+)%/g, (_m, name: string) => {
+      const label = ICON_LABEL[String(name).toLowerCase()];
+      return label ? `«scale:${label}»` : '';
+    })
     .replace(/\{\{[^}]+\}\}/g, '')
     .replace(/\[\[[^\]]+\]\]/g, '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/(?<!\d)%/g, '')            // remove stray % left by unresolvable variables (e.g. obfuscated CDragon keys)
-    .replace(/\(\s*\)/g, '')            // remove empty ()
+    .replace(/(?<!\d)%/g, '')            // stray % from unresolvable vars (keeps "244%")
+    .replace(/\(\s*\)/g, '');            // empty () left by a stripped icon
+
+  // Drop tokens whose value never resolved (obfuscated CDragon keys) so we don't
+  // render an empty coloured span, e.g. "«phys: »" → "". Repeat to peel nested
+  // empties inside-out.
+  let prevEmpty: string;
+  do {
+    prevEmpty = text;
+    text = text.replace(/«[a-z]+:\s*»/g, '');
+  } while (text !== prevEmpty);
+
+  text = text
     .replace(/\s+\)/g, ')')             // fix " )" → ")"
     .replace(/\(\s+/g, '(')             // fix "( " → "("
-    .replace(/\s{2,}/g, ' ')            // collapse double spaces
-    .replace(/\s+([.,])/g, '$1')        // fix " ." / " ,"
+    .replace(/[ \t]{2,}/g, ' ')          // collapse double spaces (keep newlines)
+    .replace(/ +([.,])/g, '$1')          // fix " ." / " ,"
+    .replace(/\n{3,}/g, '\n\n')          // cap blank runs
+    .split('\n')
+    .map((l) => l.trim())
+    .join('\n')
     .trim();
   return text || null;
 }
@@ -288,10 +426,20 @@ async function main(): Promise<void> {
   const overrideSet = process.env.SET_NUMBER ? Number(process.env.SET_NUMBER) : undefined;
   const patch = process.env.TFT_PATCH; // e.g. '17.5' — optional, marks current patch
 
-  console.log(`Fetching ${TFT_DATA_URL} ...`);
-  const res = await fetch(TFT_DATA_URL);
-  if (!res.ok) throw new Error(`Failed to fetch TFT data: HTTP ${res.status}`);
-  const data = (await res.json()) as CDragonData;
+  // TFT_DATA_FILE points at a local CDragon en_us.json (offline / pinned patch);
+  // otherwise fetch the live "latest" catalog.
+  const dataFile = process.env.TFT_DATA_FILE;
+  let data: CDragonData;
+  if (dataFile) {
+    console.log(`Reading ${dataFile} ...`);
+    const fs = await import('node:fs/promises');
+    data = JSON.parse(await fs.readFile(dataFile, 'utf8')) as CDragonData;
+  } else {
+    console.log(`Fetching ${TFT_DATA_URL} ...`);
+    const res = await fetch(TFT_DATA_URL);
+    if (!res.ok) throw new Error(`Failed to fetch TFT data: HTTP ${res.status}`);
+    data = (await res.json()) as CDragonData;
+  }
 
   const { setNumber, champions, traits, augmentApiNames, name } = pickCurrentSet(data, overrideSet);
   console.log(
@@ -335,18 +483,23 @@ async function main(): Promise<void> {
 
     for (const t of traits) {
       if (!t.apiName || !t.name) continue;
-      const breakpoints = (t.effects ?? []).map((e) => ({
+      const { intro, rowTexts } = buildTraitContent(t);
+      const breakpoints = (t.effects ?? []).map((e, i) => ({
         minUnits: e.minUnits ?? e.min ?? null,
         maxUnits: e.maxUnits ?? e.max ?? null,
         style: e.style ?? null,
+        effect: rowTexts[i] ?? null,
       }));
+      // If there's no standalone intro, fall back to the first breakpoint effect
+      // so the hover tooltip still has something to show.
+      const description = intro ?? rowTexts.find((r) => !!r) ?? null;
       await client.query(
         `INSERT INTO traits (set_number, trait_id, name, description, breakpoints, icon_path)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (set_number, trait_id) DO UPDATE
            SET name = EXCLUDED.name, description = EXCLUDED.description,
                breakpoints = EXCLUDED.breakpoints, icon_path = EXCLUDED.icon_path`,
-        [setNumber, t.apiName, t.name, formatTraitDescription(t), JSON.stringify(breakpoints), t.icon ?? null],
+        [setNumber, t.apiName, t.name, description, JSON.stringify(breakpoints), t.icon ?? null],
       );
     }
 
@@ -371,13 +524,18 @@ async function main(): Promise<void> {
     }
 
     for (const it of items) {
+      const stats = itemStats(it.effects);
       await client.query(
-        `INSERT INTO items (set_number, item_id, name, icon_path, composition, description)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO items (set_number, item_id, name, icon_path, composition, description, stats)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (set_number, item_id) DO UPDATE
            SET name = EXCLUDED.name, icon_path = EXCLUDED.icon_path,
-               composition = EXCLUDED.composition, description = EXCLUDED.description`,
-        [setNumber, it.apiName, it.name, it.icon ?? null, it.composition ?? [], resolveDesc(it.desc, it.effects)],
+               composition = EXCLUDED.composition, description = EXCLUDED.description,
+               stats = EXCLUDED.stats`,
+        [
+          setNumber, it.apiName, it.name, it.icon ?? null, it.composition ?? [],
+          resolveDesc(it.desc, it.effects), JSON.stringify(stats),
+        ],
       );
     }
 

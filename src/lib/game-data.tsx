@@ -2,6 +2,8 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { LibUnit, LibTrait, LibItem, LibraryData } from '@/server/library-data';
+import { RichText, richFirstLine } from '@/lib/rich-text';
+import { UnitStatsGrid } from '@/components/UnitStatsGrid';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,6 +23,7 @@ interface TooltipState {
   name: string;
   subtitle?: string;
   desc?: string;
+  trait?: LibTrait; // when set, the tooltip renders the full effect + breakpoints
 }
 
 interface ModalState {
@@ -50,20 +53,6 @@ export function useGameData(): CtxValue {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function strip(html: string | null | undefined): string {
-  if (!html) return '';
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-}
-
-function firstLine(text: string, max = 110): string {
-  const line = text.split('\n')[0].trim();
-  return line.length <= max ? line : line.slice(0, max) + '…';
-}
-
 const COST_COLOR = ['', 'var(--c1)', 'var(--c2)', 'var(--c3)', 'var(--c4)', 'var(--c5)'];
 const BP_NAME = ['', 'Bronze', 'Silver', 'Gold', 'Prismatic'];
 const KIND_LABEL: Record<string, string> = {
@@ -73,22 +62,6 @@ const KIND_LABEL: Record<string, string> = {
   artifact: 'Artifact',
   other: 'Special',
 };
-
-const STAT_ROWS: [string, string][] = [
-  ['HP', 'hp'],
-  ['AD', 'attackDamage'],
-  ['AP', 'abilityPower'],
-  ['Atk Speed', 'attackSpeed'],
-  ['Armor', 'armor'],
-  ['MR', 'magicResist'],
-  ['Range', 'range'],
-  ['Mana', 'initialMana'],
-];
-
-function fmtStat(v: number): string {
-  if (v > 1 || Number.isInteger(v)) return Math.round(v).toString();
-  return v.toFixed(2);
-}
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
@@ -123,13 +96,16 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
 
   const showTooltip = useCallback(
     (e: React.MouseEvent, type: EntityType, id: string, name: string) => {
-      if (modal) return;
+      // Trait tooltips are allowed over an open modal (hovering a unit's trait
+      // pills inside its popup); unit/item quick-tips stay suppressed there.
+      if (modal && type !== 'trait') return;
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       const x = Math.min(rect.left, window.innerWidth - 296);
       const y = rect.bottom + 8;
 
       let subtitle: string | undefined;
       let desc: string | undefined;
+      let trait: LibTrait | undefined;
 
       if (store) {
         if (type === 'unit') {
@@ -139,22 +115,17 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
             if (u.abilityName) desc = `✦ ${u.abilityName}`;
           }
         } else if (type === 'trait') {
-          const t = store.traits.get(id);
-          if (t) {
-            if (t.breakpoints.length) subtitle = t.breakpoints.map((b) => b.minUnits).join(' / ');
-            const clean = strip(t.description);
-            if (clean) desc = firstLine(clean);
-          }
+          // Render the full effect + breakpoints for traits (not just a first line).
+          trait = store.traits.get(id);
         } else {
           const it = store.items.get(id) ?? store.itemsByName.get(name.toLowerCase());
           if (it) {
-            const clean = strip(it.description);
-            if (clean) desc = firstLine(clean);
+            desc = richFirstLine(it.description) || undefined;
           }
         }
       }
 
-      setTooltip({ x, y, name, subtitle, desc });
+      setTooltip({ x, y, name, subtitle, desc, trait });
     },
     [store, modal],
   );
@@ -173,10 +144,26 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
       {children}
 
       {tooltip && (
-        <div className="gd-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
+        <div
+          className={`gd-tooltip${tooltip.trait ? ' gd-tt-trait' : ''}`}
+          style={{ left: tooltip.x, top: tooltip.y }}
+        >
           <span className="gd-tt-name">{tooltip.name}</span>
-          {tooltip.subtitle && <span className="gd-tt-sub">{tooltip.subtitle}</span>}
-          {tooltip.desc && <p className="gd-tt-desc">{tooltip.desc}</p>}
+          {tooltip.trait ? (
+            <>
+              {tooltip.trait.description && (
+                <RichText text={tooltip.trait.description} className="gd-tt-desc rt" />
+              )}
+              {tooltip.trait.breakpoints.length > 0 && (
+                <TraitBreakpoints breakpoints={tooltip.trait.breakpoints} bare />
+              )}
+            </>
+          ) : (
+            <>
+              {tooltip.subtitle && <span className="gd-tt-sub">{tooltip.subtitle}</span>}
+              {tooltip.desc && <p className="gd-tt-desc">{tooltip.desc}</p>}
+            </>
+          )}
         </div>
       )}
 
@@ -225,15 +212,11 @@ function Fallback({ name }: { name: string }) {
 }
 
 function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
+  const { showTooltip, hideTooltip, openModal } = useGameData();
   const costColor = COST_COLOR[unit.cost] ?? 'var(--text-dim)';
-  const desc = strip(unit.abilityDesc);
-  const traitNames = unit.traits
-    .map((id) => store.traits.get(id)?.name)
-    .filter((n): n is string => !!n);
-
-  const stats = unit.stats
-    ? STAT_ROWS.filter(([, k]) => unit.stats![k] !== undefined)
-    : [];
+  const unitTraits = unit.traits
+    .map((id) => store.traits.get(id))
+    .filter((t): t is LibTrait => !!t);
 
   return (
     <>
@@ -256,11 +239,17 @@ function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
               </span>
             )}
           </div>
-          {traitNames.length > 0 && (
+          {unitTraits.length > 0 && (
             <div className="lib-detail-traits" style={{ marginTop: 6 }}>
-              {traitNames.map((n) => (
-                <span key={n} className="gd-trait-pill">
-                  {n}
+              {unitTraits.map((t) => (
+                <span
+                  key={t.id}
+                  className="gd-trait-pill gd-trait-link"
+                  onMouseEnter={(e) => showTooltip(e, 'trait', t.id, t.name)}
+                  onMouseLeave={hideTooltip}
+                  onClick={() => openModal('trait', t.id, t.name)}
+                >
+                  {t.name}
                 </span>
               ))}
             </div>
@@ -268,29 +257,18 @@ function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
         </div>
       </div>
 
-      {stats.length > 0 && (
+      {unit.stats && (
         <div className="lib-section">
           <div className="lib-section-label">Stats</div>
-          <div className="lib-stats-grid">
-            {stats.map(([label, key]) => (
-              <div key={key} className="lib-stat">
-                <span className="lib-stat-k">{label}</span>
-                <span className="lib-stat-v">{fmtStat(unit.stats![key])}</span>
-              </div>
-            ))}
-          </div>
+          <UnitStatsGrid stats={unit.stats} />
         </div>
       )}
 
-      {(unit.abilityName || desc) && (
+      {(unit.abilityName || unit.abilityDesc) && (
         <div className="lib-section">
-          {unit.abilityName && (
-            <div className="lib-section-label">Ability</div>
-          )}
-          {unit.abilityName && (
-            <div className="lib-ability-name">{unit.abilityName}</div>
-          )}
-          {desc && <p className="lib-desc">{desc}</p>}
+          {unit.abilityName && <div className="lib-section-label">Ability</div>}
+          {unit.abilityName && <div className="lib-ability-name">{unit.abilityName}</div>}
+          <RichText text={unit.abilityDesc} className="lib-desc rt" />
         </div>
       )}
     </>
@@ -298,7 +276,6 @@ function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
 }
 
 function TraitPopup({ trait }: { trait: LibTrait }) {
-  const desc = strip(trait.description);
   return (
     <>
       <div className="lib-detail-hero">
@@ -309,33 +286,53 @@ function TraitPopup({ trait }: { trait: LibTrait }) {
         )}
         <div>
           <div className="lib-detail-name">{trait.name}</div>
-          {trait.breakpoints.length > 0 && (
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
-              {trait.breakpoints.map((b, i) => {
-                const isUnique = trait.breakpoints.length === 1;
-                return (
-                  <span key={i} className={`gd-bp-pill ${isUnique ? 'unique' : `s${b.style}`}`}>
-                    {b.minUnits} {isUnique ? 'Unique' : BP_NAME[b.style]}
-                  </span>
-                );
-              })}
-            </div>
-          )}
         </div>
       </div>
 
-      {desc && (
+      {trait.description && (
         <div className="lib-section">
           <div className="lib-section-label">Effect</div>
-          <p className="lib-desc">{desc}</p>
+          <RichText text={trait.description} className="lib-desc rt" />
         </div>
       )}
+
+      {trait.breakpoints.length > 0 && <TraitBreakpoints breakpoints={trait.breakpoints} />}
     </>
   );
 }
 
+function TraitBreakpoints({
+  breakpoints,
+  bare,
+}: {
+  breakpoints: LibTrait['breakpoints'];
+  bare?: boolean;
+}) {
+  const isUnique = breakpoints.length === 1;
+  const list = (
+    <div className="bp-list">
+      {breakpoints.map((b, i) => (
+        <div key={i} className="bp-row">
+          <span className={`gd-bp-pill ${isUnique ? 'unique' : `s${b.style}`}`}>{b.minUnits}</span>
+          {b.effect ? (
+            <RichText text={b.effect} className="bp-eff rt" />
+          ) : (
+            <span className="bp-eff dim">{isUnique ? 'Unique' : BP_NAME[b.style]}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+  if (bare) return list;
+  return (
+    <div className="lib-section">
+      <div className="lib-section-label">Breakpoints</div>
+      {list}
+    </div>
+  );
+}
+
 function ItemPopup({ item }: { item: LibItem }) {
-  const desc = strip(item.description);
   return (
     <>
       <div className="lib-detail-hero">
@@ -350,11 +347,25 @@ function ItemPopup({ item }: { item: LibItem }) {
         </div>
       </div>
 
-      {desc && (
+      {item.stats.length > 0 && <ItemStats stats={item.stats} />}
+
+      {item.description && (
         <div className="lib-section">
-          <p className="lib-desc">{desc}</p>
+          <RichText text={item.description} className="lib-desc rt" />
         </div>
       )}
     </>
+  );
+}
+
+function ItemStats({ stats }: { stats: LibItem['stats'] }) {
+  return (
+    <div className="istat-list">
+      {stats.map((s) => (
+        <span key={s.label} className="istat">
+          <b>{s.value}</b> {s.label}
+        </span>
+      ))}
+    </div>
   );
 }

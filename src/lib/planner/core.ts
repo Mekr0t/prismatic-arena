@@ -12,6 +12,7 @@ export interface PlannerUnit {
 export interface Breakpoint {
   minUnits: number;
   style: number; // 1 bronze · 2 silver · 3 gold · 4 prismatic
+  effect?: string | null; // per-breakpoint effect text (rich tokens); library/popup only
 }
 
 export interface PlannerTrait {

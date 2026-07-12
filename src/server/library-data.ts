@@ -33,11 +33,17 @@ export interface LibTrait {
   breakpoints: Breakpoint[];
 }
 
+export interface ItemStat {
+  label: string;
+  value: string;
+}
+
 export interface LibItem {
   id: string;
   name: string;
   iconUrl: string | null;
   description: string | null;
+  stats: ItemStat[];
   kind: 'component' | 'emblem' | 'craftable' | 'artifact' | 'other';
 }
 
@@ -94,9 +100,9 @@ export async function getLibraryData(): Promise<LibraryData> {
     ),
     query<{
       item_id: string; name: string; icon_path: string | null;
-      description: string | null; composition: string[];
+      description: string | null; composition: string[]; stats: ItemStat[] | null;
     }>(
-      `SELECT item_id, name, icon_path, description, composition
+      `SELECT item_id, name, icon_path, description, composition, stats
        FROM items WHERE set_number = $1`,
       [setNumber],
     ),
@@ -132,7 +138,11 @@ export async function getLibraryData(): Promise<LibraryData> {
     breakpoints: (Array.isArray(t.breakpoints) ? t.breakpoints : [])
       .filter((b): b is Breakpoint => !!b && typeof b.minUnits === 'number')
       .sort((a, b) => a.minUnits - b.minUnits)
-      .map((b, i, arr) => ({ minUnits: b.minUnits, style: arr.length === 1 ? 4 : Math.min(i + 1, 4) })),
+      .map((b, i, arr) => ({
+        minUnits: b.minUnits,
+        style: arr.length === 1 ? 4 : Math.min(i + 1, 4),
+        effect: b.effect ?? null,
+      })),
   }));
 
   const setPrefix = `TFT${setNumber}_Item_`;
@@ -165,6 +175,7 @@ export async function getLibraryData(): Promise<LibraryData> {
         name: r.name,
         iconUrl: iconUrl(r.icon_path),
         description: r.description,
+        stats: Array.isArray(r.stats) ? r.stats : [],
         kind,
       });
     }

@@ -1,0 +1,181 @@
+/* rich.css — coloured description tokens (RichText) + the champion stat grid.
+   Class names mirror the «class:…» tokens emitted by load-static-data.ts and
+   parsed in lib/rich-text.tsx. Colours read on the dark surface; each is a
+   vivid accent over body text. */
+
+.rt {
+  line-height: 1.5;
+}
+.rt-line {
+  margin: 0 0 6px;
+}
+.rt-line:last-child {
+  margin-bottom: 0;
+}
+
+/* Damage / scaling numbers */
+.rt-phys,
+.rt-ad {
+  color: #ff9d5c;
+  font-weight: 600;
+}
+.rt-magic,
+.rt-ap {
+  color: #59b0ff;
+  font-weight: 600;
+}
+.rt-true {
+  color: #f4e0c0;
+  font-weight: 600;
+}
+.rt-hp {
+  color: #5fd66b;
+  font-weight: 600;
+}
+.rt-mana {
+  color: #35c3f0;
+  font-weight: 600;
+}
+.rt-armor {
+  color: #e8c46a;
+  font-weight: 600;
+}
+.rt-lvl {
+  color: var(--gold, #e7c766);
+  font-weight: 600;
+}
+
+/* Emphasis / structure */
+.rt-bonus {
+  color: var(--gold, #e7c766);
+  font-weight: 600;
+}
+.rt-kw {
+  color: var(--accent, #8ab4ff);
+  font-weight: 600;
+}
+.rt-label {
+  color: var(--text);
+  font-weight: 700;
+}
+.rt-bold {
+  font-weight: 700;
+}
+.rt-rules {
+  color: var(--text-dim);
+  font-size: 0.92em;
+}
+/* Scaling hint (what a value is / scales with) — muted so it reads as secondary
+   even inside a coloured damage span. */
+.rt-scale {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+/* Two adjacent scaling labels (e.g. Bastion "Armor" "MR") shouldn't run together. */
+.rt-scale + .rt-scale {
+  margin-left: 4px;
+}
+.rt-radiant {
+  color: #ffd76a;
+  font-weight: 600;
+}
+.rt-shadow {
+  color: #b58cff;
+  font-weight: 600;
+}
+
+/* ── Champion stat grid ─────────────────────────────────────────────────── */
+
+.ustat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+.ustat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.ustat-k {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.ustat-v {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ustat-v.scaling {
+  color: var(--gold, #e7c766);
+}
+
+/* ── Trait breakpoint rows (badge + effect) ─────────────────────────────── */
+
+.bp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bp-row {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.bp-row .gd-bp-pill,
+.bp-row .lib-bp-badge {
+  justify-self: start;
+  min-width: 26px;
+  text-align: center;
+}
+.bp-eff {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bp-eff.dim {
+  color: var(--text-dim);
+}
+
+/* Trait hover card: wider than a quick-tip, shows full effect + breakpoints.
+   Applies to both the game-data (.gd-tooltip) and Library (.lib-tooltip) tips. */
+.gd-tt-trait {
+  max-width: 360px;
+  width: max-content;
+  white-space: normal;
+}
+.gd-tt-trait .gd-tt-name {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.gd-tt-trait .gd-tt-desc {
+  margin: 4px 0 8px;
+}
+.gd-tt-trait .bp-list {
+  gap: 5px;
+}
+.gd-trait-link {
+  cursor: pointer;
+}
+
+/* ── Item stat bonuses ──────────────────────────────────────────────────── */
+
+.istat-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 4px 0 10px;
+}
+.istat {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.istat b {
+  color: var(--gold, #e7c766);
+  font-weight: 700;
+  margin-right: 2px;
+}

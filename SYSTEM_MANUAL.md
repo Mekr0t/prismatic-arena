@@ -72,6 +72,7 @@ All loaded via `@import` in `src/app/globals.css` in cascade order.
 | `tier.css` | `.tier-page`/`.tier-controls`, `.tier-table`/`.tier-section`/`.tier-band`, `.tier-badge` (S–D), `.comp-row`, `.comp-ident`/`.cportrait`/`.tchip`, `.comp-stat`/`.cs-conf`, `.niche-head` (the `/comps` tier list) |
 | `comp-detail.css` | `.cd-*` — the `/comps/[key]` archetype detail page: `.cd-head`/`.cd-stats`, `.cd-strips` (core/flex), `.cd-cols`/`.cd-panel`, `.cd-tabs` (Placement/Hit-states switch), `.cd-table` (hit states, units w/ `.good`/`.bad` delta), `.cd-bands` (level bars + `.cd-pl` placement histogram, bottom-4 muted), `.cd-builds`, `.cd-boards`, `.cd-mini` portraits. Reuses tier.css badges/tags and the `.ex-*` tile conventions |
 | `popups.css` | `.gd-tooltip`, `.gd-backdrop`, `.gd-modal`, `.gd-bp-pill`, `.gd-trait-pill` |
+| `rich.css` | `.rt-*` coloured description tokens (phys/magic/ap/hp/bonus/…), `.ustat-*` champion stat grid, `.bp-row`/`.bp-eff` trait-breakpoint rows, `.istat` item stat bonuses |
 | `admin.css` | `.admin-login`/`.login-card`, `.admin-bar` shell, `.ops-*` panel (cards, `.usage-chart`, `.ops-table`, `.badge-*`) |
 
 ---
@@ -130,7 +131,10 @@ Redis singleton. Exports `redis` (`ioredis`). **Note:** BullMQ does *not* share 
 `iconUrl(path)` — converts an `ASSETS/...` game path to a `https://raw.communitydragon.org/latest/game/...` CDN URL.
 
 ### `game-data.tsx`
-`'use client'` — global context for the popup/modal system (`GameDataProvider`, `useGameData()`, `EntityType`, popup components). Fetches `/api/game-data` once on mount.
+`'use client'` — global context for the popup/modal system (`GameDataProvider`, `useGameData()`, `EntityType`, popup components). Fetches `/api/game-data` once on mount. Descriptions render through `rich-text.tsx`; stats through `UnitStatsGrid`.
+
+### `rich-text.tsx`
+`'use client'` — renders the `«class:text»` token format that `load-static-data.ts` emits (CDragon semantic tags → colours). `RichText` PARSES the nesting-capable grammar into React spans (never innerHTML — no injection surface); `richToPlain` / `richFirstLine` flatten tokens for tooltips. Class names map 1:1 to `.rt-<class>` in `rich.css`. Plain (token-free) text renders unchanged.
 
 ### `planner/core.ts`
 Pure planner types + algorithms (`PlannerUnit/Trait/Item/Data`, `Cell`, `ActiveTrait`, `BOARD_*`, `emptyBoard`, `computeActiveTraits`, `encodeBoard`/`decodeBoard`, `encodeRiotCode`/`decodeRiotCode`).
@@ -199,7 +203,9 @@ Apex ladder, sorted + paginated. Names for the visible page resolve through `res
 `getMatchDetail(platform, matchId)` → `MatchDetailVM`. All 8 lobby names resolve through one `resolveAccounts` call.
 
 ### `library-data.ts`
-`getLibraryData()` → `LibraryData` (units/traits/items/augments) for the library + popups.
+`getLibraryData()` → `LibraryData` (units/traits/items/augments) for the library + popups. Descriptions carry `«class:…»` rich tokens (from `load-static-data.ts`); `LibItem.stats: ItemStat[]` holds item stat bonuses; trait `Breakpoint.effect` holds each breakpoint's resolved effect text.
+
+**Static-data loader (`scripts/load-static-data.ts`, `npm run data:load`):** `resolveDesc` interpolates `@Var@` values then converts CDragon semantic tags → `«class:…»` tokens (colour), drops `<ShowIf.…>` augment-conditional blocks and unresolvable/empty tokens, and maps `%i:…%` stat icons (damage-scaling ones dropped to avoid confusing bare "(AP)" fragments). `buildTraitContent` splits a trait into intro + per-breakpoint effect text; `itemStats` extracts curated stat bonuses from `effects`. `TFT_DATA_FILE=<path>` loads a local `en_us.json` instead of fetching latest.
 
 ### `planner-data.ts`
 `getPlannerData()` → `PlannerData` (units with plannerCodes, traits, items).
@@ -318,6 +324,9 @@ Existing: `page.tsx` (Home + `TopPlayers`), `layout.tsx` (RootLayout + `GameData
 
 Existing: `Header`, `Nav` (`'use client'`, links: Profiles/Leaderboards/Planner/Library/Comps — all `<Link>`), `SearchBar`, `RegionSelect`, `Board` (`PlacementBadge`/`UnitTile`/`TraitChip`/`BoardStrip`), `ProfileHeader`, `ProfileContent`, `MatchList`, `Library`, `Planner`, and the `/comps` tier-list set: `TierTable` (server, renders `CompRow` internally — no separate `CompIdentity` component; shows `Augment: 2× <units>` / `<champ> Hero Aug` badges from `identity.dupUnits`/`heroAugmentUnit`; row names link to `/comps/[key]` via `CompRowVM.groupKey` + the `detailQuery` prop), `CompDetail` (`'use client'` — the full `/comps/[key]` view: header, core/flex strips, a tabbed Placement/Hit-states panel (opens per `hitStatesDefault`), level bands, units table, builds, most-played boards; wires `useGameData` popups), `ExampleTeam` (`'use client'`, renders the trait strip + unit board, wired to `useGameData`), `StatCell` (shows avg/top-4/play/n + High/Med/Low badge; 95% CIs in hover tooltip), `TierControls` (URL-synced selectors + niche toggle).
 
+### `UnitStatsGrid.tsx`
+`'use client'` — champion stat block shared by the game-data popup and Library. CDragon stores 1★ base stats; HP (×1.8) and AD (×1.5, key `damage` not `attackDamage`) render per-star as `base/2★/3★`, the rest single-value. AP defaults to 100 when absent.
+
 ### `admin/AutoRefresh.tsx`
 `'use client'` — `AutoRefresh({ seconds })` calls `router.refresh()` on an interval (default 15s) + a manual button, to keep the ops panel live.
 
@@ -342,6 +351,7 @@ Ordered, forward-only SQL, applied by `npm run db:migrate`.
 | `0011_comp_archetype.sql` | `comps.archetype text` — intent archetype tag (e.g. `fast8`, `1cost_reroll`); currently always NULL (clusterer sets it to NULL; no stage populates it yet) |
 | `0012_unit_copy_index.sql` | Drops `UNIQUE(participant_id, character_id)` on `participant_units`, adds `copy_index smallint NOT NULL DEFAULT 0` + new 3-column unique `(participant_id, character_id, copy_index)`. Allows multiple copies of the same unit (duplicate-copy augment) per board |
 | `0013_meta_comp.sql` | `comps.meta_comp text` — carry-archetype label written by Stage 6 (merge); sorted `isBucketCarry` characterIds, pipe-joined. NULL until merge has run |
+| `0014_item_stats.sql` | `items.stats jsonb` — curated stat bonuses (`[{label,value}]`) from the CDragon `effects` map, for the Library/popup stat line |
 
 **Ops tables (0007):**
 - `ingestion_jobs` — `(id, job_type, region, status, started_at, finished_at, items_done, error_count, cursor, created_at)`. Written by `withJobTracking`.
