@@ -29,6 +29,14 @@ import { buildCompProfile, buildTailProfile } from '../comp-profile';
 import { mergeComps, assignTail, type CompProfile } from '../comp-merge';
 import type { RawUnitItem } from '../carry-classify';
 
+/** Worn-emblem item ids encoded in a cluster signature as `emb:<id>` tokens. */
+function emblemsFromSignature(signature: string | null): string[] {
+  if (!signature) return [];
+  const out: string[] = [];
+  for (const tok of signature.split('|')) if (tok.startsWith('emb:')) out.push(tok.slice(4));
+  return out;
+}
+
 // TFT Ranked queue id — keep Double Up / Hyper Roll / normals out.
 const RANKED_TFT_QUEUE_ID = 1100;
 
@@ -102,12 +110,14 @@ export async function loadCompProfiles(
   const compRes = await client.query<{
     id: number;
     set_number: number;
+    signature: string;
     core_units: string[];                                        // jsonb → string[]
     carries: { character_id: string; items: string[] }[];        // jsonb
     board_count: string;                                         // bigint → string
   }>(
     `SELECT c.id,
             c.set_number,
+            c.signature,
             c.core_units,
             c.carries,
             COALESCE(SUM(cs.n), 0) AS board_count
@@ -165,6 +175,7 @@ export async function loadCompProfiles(
       statTotal: Number(row.board_count),
       rawRows: rawByComp.get(row.id) ?? [],
       costOf: (id) => costBySetUnit.get(`${row.set_number}:${id}`) ?? 0,
+      emblems: emblemsFromSignature(row.signature),
     }),
   );
 }
@@ -183,12 +194,14 @@ export async function loadTailProfiles(
   const res = await client.query<{
     id: number;
     set_number: number;
+    signature: string;
     core_units: string[];
     carries: { character_id: string }[];
     board_count: string;
   }>(
     `SELECT c.id,
             c.set_number,
+            c.signature,
             c.core_units,
             c.carries,
             COALESCE(SUM(cs.n), 0) AS board_count
@@ -211,6 +224,7 @@ export async function loadTailProfiles(
       threeStars: row.carries.map((c) => c.character_id),
       statTotal: Number(row.board_count),
       costOf: (id) => costBySetUnit.get(`${row.set_number}:${id}`) ?? 0,
+      emblems: emblemsFromSignature(row.signature),
     }),
   );
 }

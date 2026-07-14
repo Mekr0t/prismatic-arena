@@ -95,6 +95,13 @@ const REQUIRE_COPY_CLASS  = process.env.MERGE_REQUIRE_COPY_CLASS !== 'false';
 // otherwise looks identical. On by default; set
 // MERGE_REQUIRE_HERO_AUGMENT_CLASS=false to disable.
 const REQUIRE_HERO_AUGMENT_CLASS = process.env.MERGE_REQUIRE_HERO_AUGMENT_CLASS !== 'false';
+// Emblem class guard — OFF by default. Emblem variants are split and folded at
+// READ time (comps-service), grouping by the merge archetype (the "family") and
+// sub-splitting by each comp's signature emblems, so emblem and non-emblem
+// builds of one line MERGE here into a single archetype (a merge-level split
+// gives them independent carry labels that can't be reliably reunited). Set
+// MERGE_REQUIRE_EMBLEM_CLASS=true to restore the merge-level split.
+const REQUIRE_EMBLEM_CLASS = process.env.MERGE_REQUIRE_EMBLEM_CLASS === 'true';
 
 /** Weight assumed for units missing from CompProfile.unitWeights. */
 const DEFAULT_UNIT_WEIGHT = 1;
@@ -134,6 +141,10 @@ export interface CompProfile {
    *  only run one hero augment, so this is a single ID, not a joined list.
    *  Used as the "hero augment class" guard. */
   heroAugmentSig: string;
+  /** Sorted worn trait-emblem item ids, pipe-joined; '' for a board with no
+   *  emblem. Used as the "emblem class" guard — an emblem build (which can hit a
+   *  trait breakpoint the plain build can't) stays a distinct archetype. */
+  emblemSig: string;
   /** Total boards in this comp, used as weight in archetype freq accumulation. */
   boardCount: number;
 }
@@ -182,6 +193,8 @@ interface ArchetypeAcc {
   copySigCounts: Map<string, number>;
   /** heroAugmentSig → count, for electing the dominant hero-augment champ. */
   heroAugmentSigCounts: Map<string, number>;
+  /** emblemSig → count, for electing the dominant emblem signature. */
+  emblemSigCounts: Map<string, number>;
 }
 
 // ── Similarity helpers ────────────────────────────────────────────────────────
@@ -281,6 +294,7 @@ function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult
   const domGrade3  = getDomGrade3(acc);
   const domCopy    = electDominant(acc.copySigCounts);
   const domHeroAugment = electDominant(acc.heroAugmentSigCounts);
+  const domEmblem  = electDominant(acc.emblemSigCounts);
 
   let carryOverlap: number;
   if (comp.carries.size === 0 && domCarries.size === 0) {
@@ -306,6 +320,7 @@ function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult
   }
   if (REQUIRE_COPY_CLASS && comp.copySig !== domCopy) fails.push('copy_class');
   if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== domHeroAugment) fails.push('hero_augment');
+  if (REQUIRE_EMBLEM_CLASS && comp.emblemSig !== domEmblem) fails.push('emblem_class');
   if (REQUIRE_CARRY && carryOverlap < MIN_CARRY_OVERLAP) fails.push('carry_overlap');
   const slack = carryOverlap >= STRONG_CARRY_OVERLAP ? STRONG_CARRY_SLACK : 0;
   if (containment < MIN_CONTAINMENT) fails.push('containment');
@@ -342,6 +357,7 @@ function makeAcc(setNumber: number): ArchetypeAcc {
     grade3Members: 0,
     copySigCounts: new Map(),
     heroAugmentSigCounts: new Map(),
+    emblemSigCounts: new Map(),
   };
 }
 
@@ -368,6 +384,7 @@ function addToAcc(acc: ArchetypeAcc, comp: CompProfile): void {
     comp.heroAugmentSig,
     (acc.heroAugmentSigCounts.get(comp.heroAugmentSig) ?? 0) + 1,
   );
+  acc.emblemSigCounts.set(comp.emblemSig, (acc.emblemSigCounts.get(comp.emblemSig) ?? 0) + 1);
 }
 
 function mergeCounts(dst: Map<string, number>, src: Map<string, number>): void {
@@ -386,6 +403,7 @@ function mergeAccInto(dst: ArchetypeAcc, src: ArchetypeAcc): void {
   dst.grade3Members += src.grade3Members;
   mergeCounts(dst.copySigCounts, src.copySigCounts);
   mergeCounts(dst.heroAugmentSigCounts, src.heroAugmentSigCounts);
+  mergeCounts(dst.emblemSigCounts, src.emblemSigCounts);
 }
 
 /** An archetype's accumulated state viewed as a comparable profile (fold pass). */
@@ -400,6 +418,7 @@ function accProfile(acc: ArchetypeAcc): CompProfile {
     carryGrade3: getDomGrade3(acc),
     copySig: electDominant(acc.copySigCounts),
     heroAugmentSig: electDominant(acc.heroAugmentSigCounts),
+    emblemSig: electDominant(acc.emblemSigCounts),
     boardCount: acc.totalWeight,
   };
 }
@@ -410,7 +429,8 @@ function archetypeLabel(acc: ArchetypeAcc): string {
   // A duplicate-copy-augment or hero-augment archetype is distinct from the
   // classic build even with identical carries. Because meta_comp IS this label
   // and every downstream reader groups on it, both classes must be encoded HERE.
-  // Marker stays parseable: "<carries>##dup:<doubled-unit-ids>##aug:<champId>".
+  // Marker stays parseable:
+  // "<carries>##dup:<doubled-ids>##aug:<champId>##emb:<emblem-item-ids>".
   const domCopy = electDominant(acc.copySigCounts);
   const domHeroAugment = electDominant(acc.heroAugmentSigCounts);
   let label = base;
@@ -582,6 +602,7 @@ export function assignTail(
     }
     if (REQUIRE_COPY_CLASS && comp.copySig !== arch.copySig) continue;
     if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== arch.heroAugmentSig) continue;
+    if (REQUIRE_EMBLEM_CLASS && comp.emblemSig !== arch.emblemSig) continue;
 
     const { containment, jaccard } = weightedOverlap(comp, arch.unitWeights);
     if (containment < MIN_CONTAINMENT || jaccard < MIN_JACCARD) continue;

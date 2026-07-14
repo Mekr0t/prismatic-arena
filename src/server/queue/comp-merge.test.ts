@@ -30,6 +30,7 @@ interface Spec {
   grade3?: string[];
   copySig?: string;
   aug?: string;
+  emblem?: string;
   boards?: number;
 }
 
@@ -43,6 +44,7 @@ function P(spec: Spec): CompProfile {
     carryGrade3: new Set(spec.grade3 ?? []),
     copySig: spec.copySig ?? '',
     heroAugmentSig: spec.aug ?? '',
+    emblemSig: spec.emblem ?? '',
     boardCount: spec.boards ?? 10,
   };
 }
@@ -90,6 +92,17 @@ test('lines rolling for different 3★s (disjoint carry-grade sets) stay split',
   const res = mergeComps([jax, fio]);
   assert.notEqual(label(res, jax), label(res, fio));
   assert.equal(res.archetypes.size, 2);
+});
+
+test('emblem and non-emblem builds of one line merge into a single archetype (split is read-side)', () => {
+  // The emblem-class guard is off by default: emblem variants are split and
+  // folded at read time (comps-service), not at merge, so the line stays one
+  // archetype here and the label carries no ##emb tag.
+  const plain = P({ units: SHELL, carries: ['A'], boards: 100 });
+  const emblem = P({ units: SHELL, carries: ['A'], emblem: 'TFT17_Item_DarkStarEmblemItem', boards: 40 });
+  const res = mergeComps([plain, emblem]);
+  assert.equal(label(res, plain), label(res, emblem));
+  assert.ok(!res.assignments.get(emblem.compId)!.includes('##emb:'));
 });
 
 test('duplicate-copy augment boards stay a distinct archetype', () => {

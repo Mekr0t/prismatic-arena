@@ -30,6 +30,15 @@ export interface CompIdentity {
   signature: string;
   coreUnits: string[]; // the exact unit multiset, sorted (display / reference)
   threeStars: string[]; // character_ids fielded at 3-star, sorted (display label)
+  emblems: string[]; // worn trait-emblem item ids, deduped + sorted (identity)
+}
+
+/** A trait emblem is a Spatula/Frying-Pan item that grants its wearer an extra
+ *  trait; its item id always contains "Emblem" (e.g. TFT17_Item_DarkStarEmblemItem).
+ *  A worn emblem changes what a board IS (it can cross a trait breakpoint), so it
+ *  belongs in the exact-board identity. */
+export function isEmblemItem(itemId: string): boolean {
+  return /Emblem/i.test(itemId);
 }
 
 // 1★ and 2★ collapse to "lo"; 3★ is its own bucket — the only star distinction
@@ -45,12 +54,18 @@ function starBucket(star: number): string {
  * tokens — unit order never matters, and a duplicate-copy board (two of the same
  * unit) stays distinct from a single-copy one because tokens aren't deduped.
  */
-export function buildIdentity(units: SigUnit[]): CompIdentity | null {
+export function buildIdentity(units: SigUnit[], emblems: string[] = []): CompIdentity | null {
   const real = units.filter((u) => u.cost >= 1 && u.cost <= 5);
   if (real.length < MIN_BOARD_UNITS) return null;
 
-  const tokens = real.map((u) => `${u.characterId}:${starBucket(u.star)}`).sort();
-  const signature = tokens.join('|');
+  const unitTokens = real.map((u) => `${u.characterId}:${starBucket(u.star)}`).sort();
+  // Worn emblems are appended as `emb:<itemId>` tokens (sorted, deduped) so a
+  // board that runs a trait emblem clusters apart from the same units without
+  // it. Character ids never start with "emb:", so the two token kinds are
+  // unambiguous when the signature is parsed downstream.
+  const embSet = [...new Set(emblems)].sort();
+  const embTokens = embSet.map((e) => `emb:${e}`);
+  const signature = [...unitTokens, ...embTokens].join('|');
 
   const coreUnits = real.map((u) => u.characterId).sort(compareIds);
   const threeStars = real
@@ -58,7 +73,7 @@ export function buildIdentity(units: SigUnit[]): CompIdentity | null {
     .map((u) => u.characterId)
     .sort(compareIds);
 
-  return { signature, coreUnits, threeStars };
+  return { signature, coreUnits, threeStars, emblems: embSet };
 }
 
 function compareIds(a: string, b: string): number {

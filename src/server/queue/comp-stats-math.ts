@@ -119,9 +119,45 @@ export function computeMetrics(s: SufficientStats): CompMetrics {
   };
 }
 
-/** Map a tier score to its S/A/B/C/D band. */
+/** Map a tier score to its S/A/B/C/D band (static seed bands). */
 export function scoreToTier(score: number): string {
   for (const b of TIER_BANDS) if (score >= b.min) return b.tier;
+  return 'D';
+}
+
+export interface TierCutoffs {
+  s: number;
+  a: number;
+  b: number;
+  c: number;
+}
+
+// Distribution-relative tiering: a comp's tier is its rank within the bucket,
+// not an absolute score. Fixes the static bands compressing the top (a 2.96-avg
+// and a 4.0-avg comp both clearing S≥.55). Percentiles are cumulative from the
+// top and env-overridable.
+const TIER_PCT_S = num(process.env.TIER_PCT_S, 0.1);
+const TIER_PCT_A = num(process.env.TIER_PCT_A, 0.27);
+const TIER_PCT_B = num(process.env.TIER_PCT_B, 0.5);
+const TIER_PCT_C = num(process.env.TIER_PCT_C, 0.75);
+
+/** Score thresholds for S/A/B/C from a bucket's score distribution — S = the top
+ *  TIER_PCT_S by score, and so on. Returns null when too few comps to rank
+ *  reliably (caller falls back to the static `scoreToTier`). */
+export function tierCutoffs(scores: number[]): TierCutoffs | null {
+  const s = scores.filter((x) => Number.isFinite(x)).sort((a, b) => b - a);
+  if (s.length < 8) return null;
+  const at = (p: number): number => s[Math.min(s.length - 1, Math.floor(p * s.length))];
+  return { s: at(TIER_PCT_S), a: at(TIER_PCT_A), b: at(TIER_PCT_B), c: at(TIER_PCT_C) };
+}
+
+/** Tier a score against dynamic cutoffs (or the static bands when null). */
+export function tierForScore(score: number, cutoffs: TierCutoffs | null): string {
+  if (!cutoffs) return scoreToTier(score);
+  if (score >= cutoffs.s) return 'S';
+  if (score >= cutoffs.a) return 'A';
+  if (score >= cutoffs.b) return 'B';
+  if (score >= cutoffs.c) return 'C';
   return 'D';
 }
 

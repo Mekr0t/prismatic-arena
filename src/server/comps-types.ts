@@ -64,6 +64,7 @@ export interface CompIdentityVM {
   keyTraits: KeyTraitChipVM[]; // most-invested first (backfilled from the example team)
   dupUnits: string[]; // duplicate-copy augment units (label ##dup:), resolved names
   heroAugmentUnit: string | null; // hero-augment carry name (label ##aug:)
+  emblems: { name: string; iconUrl: string | null }[]; // worn trait emblems (label ##emb:)
 }
 
 export interface CompRowVM {
@@ -76,6 +77,10 @@ export interface CompRowVM {
   rankOrder: number | null; // stored rank order (unused in UI; reserved for admin override display)
   isManual: boolean; // whether tier was set by admin override (reserved for admin UI)
   exampleTeam: ExampleTeamVM; // most-common board for this comp (may be empty)
+  /** Emblem-variant families collapse to one row: how many variants (base +
+   *  kept emblems) the line has. 1 = no alternatives; >1 = the detail page has a
+   *  variant switcher. */
+  variantCount: number;
 }
 
 export interface TierGroupVM {
@@ -119,6 +124,7 @@ export interface TierListQuery {
   region?: string;
   rankBucket?: string;
   niche?: boolean;
+  variant?: string; // detail page: which emblem variant to show ('' = base)
 }
 
 // ── Comp detail page (archetype drill-down) ───────────────────────────────────
@@ -201,9 +207,23 @@ export interface DetailBoardVM {
   team: ExampleTeamVM;
 }
 
+export interface DetailVariantOptionVM {
+  key: string; // emblem key ('' = base); the ?variant= param value
+  label: string; // "No emblem" or the emblem name(s)
+  emblems: { name: string; iconUrl: string | null }[];
+  tier: string;
+  avgPlacement: number;
+  n: number;
+  selected: boolean;
+}
+
 export interface CompDetailVM {
   selection: TierListSelection;
   groupKey: string;
+  /** Emblem variants of this line (base + kept emblems); >1 → the page shows a
+   *  switcher. The chosen variant's data fills the rest of the VM. */
+  variantOptions: DetailVariantOptionVM[];
+  selectedVariant: string; // emblem key of the shown variant
   identity: CompIdentityVM;
   metrics: CompMetrics; // pooled across members
   playRate: number;

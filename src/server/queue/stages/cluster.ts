@@ -18,7 +18,7 @@
 
 import { pool } from '@/lib/db';
 import type { JobContext } from '../job-tracking';
-import { buildIdentity, type SigUnit } from '../comp-signature';
+import { buildIdentity, isEmblemItem, type SigUnit } from '../comp-signature';
 
 export interface ClusterJob {
   /** Cluster only this set. Default (undefined) = every set present in the data. */
@@ -36,6 +36,7 @@ interface UnitRow {
   participant_id: string;
   character_id: string;
   star_tier: number | null;
+  item_ids: string[] | null;
 }
 interface UnitCostRow {
   set_number: number;
@@ -71,9 +72,9 @@ export async function runCluster(job: ClusterJob, ctx: JobContext): Promise<void
     const partIds = participants.map((p) => p.id);
     const setsInScope = [...new Set(participants.map((p) => p.set_number))];
 
-    // 2 ─ Units (+ static cost). Traits are no longer part of identity.
+    // 2 ─ Units (+ static cost + items, for worn-emblem detection).
     const unitRes = await client.query<UnitRow>(
-      `SELECT participant_id, character_id, star_tier
+      `SELECT participant_id, character_id, star_tier, item_ids
          FROM participant_units
         WHERE participant_id = ANY($1::bigint[])`,
       [partIds],
@@ -108,7 +109,13 @@ export async function runCluster(job: ClusterJob, ctx: JobContext): Promise<void
         star: u.star_tier ?? 0,
       }));
 
-      const identity = buildIdentity(sigUnits);
+      // Worn trait emblems on the board (any unit) — part of board identity.
+      const emblems: string[] = [];
+      for (const u of units) {
+        for (const it of u.item_ids ?? []) if (isEmblemItem(it)) emblems.push(it);
+      }
+
+      const identity = buildIdentity(sigUnits, emblems);
       if (!identity) continue; // < MIN_BOARD_UNITS real units → no comp_id
 
       const key = `${p.set_number}\u0000${identity.signature}`;

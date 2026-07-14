@@ -30,7 +30,14 @@
 
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
-import { computeMetrics, scoreToTier, type SufficientStats } from './queue/comp-stats-math';
+import {
+  computeMetrics,
+  scoreToTier,
+  tierCutoffs,
+  tierForScore,
+  type SufficientStats,
+  type TierCutoffs,
+} from './queue/comp-stats-math';
 import { loadExampleTeams, styleAtUnits, EMPTY_TEAM } from './comps-example-team';
 import type {
   CarryPortraitVM,
@@ -89,12 +96,32 @@ const NICHE_LIMIT = 100; // cap the niche list so a thin meta's long tail stays 
 // board the archetype's representative slot (reroll targets are cost 1–3).
 const REROLL_MAX_COST = 3;
 
+const numEnv = (v: string | undefined, d: number): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
 // The tier floor, applied to the POOLED archetype sample (Σ n across members in
 // the selected bucket) — same env knob the trend-tier writer uses per comp.
-const TIER_MIN_SAMPLE = (() => {
-  const n = Number(process.env.TIER_MIN_SAMPLE);
-  return Number.isFinite(n) ? n : 15;
-})();
+const TIER_MIN_SAMPLE = numEnv(process.env.TIER_MIN_SAMPLE, 15);
+
+// Emblem variant families: an emblem variant is kept as a distinct variant only
+// when it's *meaningfully better* than the plain line — its avg placement beats
+// base by at least MIN_SWING and it has at least MIN_N boards. Otherwise it
+// folds into base: a worse/equal emblem is just the line played with a random
+// emblem you had to take, and belongs in the base's honest distribution.
+// Keep an emblem variant only when its avg-placement edge over base is BOTH:
+//  • practically meaningful — swing ≥ EMBLEM_SPLIT_MIN_SWING, and
+//  • statistically real — swing ≥ EMBLEM_SPLIT_SIG_K × combined SEM (this is the
+//    ADAPTIVE part: a small but well-sampled edge counts, a big but thin/noisy
+//    one doesn't — no fixed sample cutoff needed), and
+//  • not a lucky micro-sample that could headline — n ≥ minVariantN, itself
+//    adaptive: max(FLOOR, FRACTION × family boards) so popular lines need
+//    proportionally more (kills double-emblem noise).
+const EMBLEM_SPLIT_MIN_SWING = numEnv(process.env.EMBLEM_SPLIT_MIN_SWING, 0.15);
+const EMBLEM_SPLIT_SIG_K = numEnv(process.env.EMBLEM_SPLIT_SIG_K, 1.5);
+const EMBLEM_SPLIT_MIN_N_FLOOR = numEnv(process.env.EMBLEM_SPLIT_MIN_N_FLOOR, 50);
+const EMBLEM_SPLIT_MIN_N_FRAC = numEnv(process.env.EMBLEM_SPLIT_MIN_N_FRAC, 0.05);
 
 // ── Row shapes off the wire ───────────────────────────────────────────────────
 // pg returns: bigint → string, numeric → string, int/bool → number/boolean,
@@ -158,6 +185,61 @@ function asKeyTraits(v: unknown): JsonKeyTrait[] {
 function bucketRank(b: string): number {
   const i = BUCKET_ORDER.indexOf(b);
   return i === -1 ? BUCKET_ORDER.length : i;
+}
+
+// Grouping key: 'm:<meta_comp>' (the archetype/family), 'c:<comp_id>' for
+// unlabeled singletons.
+export const GKEY_SQL = `COALESCE('m:' || NULLIF(c.meta_comp, ''), 'c:' || c.id::text)`;
+
+/** Per-archetype (gkey) pooled n + score for a bucket — the population dynamic
+ *  tier cutoffs are derived from. Shared by the tier list and the detail page so
+ *  both tier against the same distribution. */
+export async function loadArchetypeScores(
+  patchId: number,
+  region: string,
+  rankBucket: string,
+): Promise<{ gkey: string; pooledN: number; score: number }[]> {
+  const rows = await query<{
+    gkey: string;
+    n: number;
+    placement_sum: string;
+    placement_sumsq: string;
+    top4: number;
+    win: number;
+  }>(
+    `SELECT ${GKEY_SQL} AS gkey,
+            SUM(cs.n)::int AS n,
+            SUM(cs.placement_sum)::bigint AS placement_sum,
+            SUM(cs.placement_sumsq)::bigint AS placement_sumsq,
+            SUM(cs.top4_count)::int AS top4,
+            SUM(cs.win_count)::int AS win
+       FROM comp_stats cs
+       JOIN comps c ON c.id = cs.comp_id
+      WHERE cs.patch_id = $1 AND cs.region = $2 AND cs.rank_bucket = $3
+      GROUP BY 1`,
+    [patchId, region, rankBucket],
+  );
+  return rows.map((r) => ({
+    gkey: r.gkey,
+    pooledN: r.n,
+    score: computeMetrics({
+      n: r.n,
+      placementSum: Number(r.placement_sum),
+      placementSumsq: Number(r.placement_sumsq),
+      top4Count: r.top4,
+      winCount: r.win,
+    }).score,
+  }));
+}
+
+/** Cutoffs for a bucket from the tierable-archetype score distribution. */
+export async function bucketTierCutoffs(
+  patchId: number,
+  region: string,
+  rankBucket: string,
+): Promise<TierCutoffs | null> {
+  const scores = await loadArchetypeScores(patchId, region, rankBucket);
+  return tierCutoffs(scores.filter((s) => s.pooledN >= TIER_MIN_SAMPLE).map((s) => s.score));
 }
 
 // ── Selector/default resolution ───────────────────────────────────────────────
@@ -255,6 +337,7 @@ interface ParsedLabel {
   carryIds: string[];
   dupIds: string[];
   heroAugmentId: string | null;
+  emblemIds: string[];
 }
 
 /** Parse a group key back into its archetype-label parts. Returns null for
@@ -265,14 +348,17 @@ function parseLabelKey(gkey: string): ParsedLabel | null {
   const [carryPart, ...tags] = gkey.slice(2).split('##');
   let dupIds: string[] = [];
   let heroAugmentId: string | null = null;
+  let emblemIds: string[] = [];
   for (const tag of tags) {
     if (tag.startsWith('dup:')) dupIds = tag.slice(4).split('|').filter(Boolean);
     else if (tag.startsWith('aug:')) heroAugmentId = tag.slice(4) || null;
+    else if (tag.startsWith('emb:')) emblemIds = tag.slice(4).split('|').filter(Boolean);
   }
   return {
     carryIds: carryPart === 'no_carry' ? [] : carryPart.split('|').filter(Boolean),
     dupIds,
     heroAugmentId,
+    emblemIds,
   };
 }
 
@@ -322,6 +408,10 @@ function buildIdentity(row: CompStatRow, cat: CatalogT, label: ParsedLabel | nul
     keyTraits,
     dupUnits: (label?.dupIds ?? []).map((id) => cat.unit(id).name),
     heroAugmentUnit: label?.heroAugmentId ? cat.unit(label.heroAugmentId).name : null,
+    emblems: (label?.emblemIds ?? []).map((id) => {
+      const it = cat.item(id);
+      return { name: it.name, iconUrl: it.iconUrl };
+    }),
   };
   identity.displayName = computeDisplayName(identity);
   return identity;
@@ -369,7 +459,7 @@ export function buildArchetypeRow(
   members: CompStatRow[],
   cat: CatalogT,
   bucketTotal: number,
-): { row: CompRowVM; repCompId: number; repN: number } {
+): { row: CompRowVM; repCompId: number; repN: number; pooled: SufficientStats } {
   const pooled = poolStats(members);
 
   // Representative = the most complete hit-state with a usable sample, where
@@ -425,8 +515,153 @@ export function buildArchetypeRow(
     rankOrder: null,
     isManual: pinned !== null,
     exampleTeam: EMPTY_TEAM, // filled by loadExampleTeams (representatives only)
+    variantCount: 1,
   };
-  return { row, repCompId: rep.comp_id, repN: rep.n ?? 0 };
+  return { row, repCompId: rep.comp_id, repN: rep.n ?? 0, pooled };
+}
+
+// ── Emblem variant families ─────────────────────────────────────────────────
+
+/** Worn-emblem item ids from a cluster signature (`emb:<id>` tokens), sorted. */
+export function emblemsFromSig(signature: string | null | undefined): string[] {
+  if (!signature) return [];
+  const out: string[] = [];
+  for (const tok of signature.split('|')) if (tok.startsWith('emb:')) out.push(tok.slice(4));
+  return out.sort();
+}
+
+/** One resolved variant of a family: its (possibly folded) members, built row,
+ *  and emblem set. Base is emblemKey '' and carries any folded-in members. */
+export interface FamilyVariant {
+  emblemKey: string; // sorted emblem ids pipe-joined; '' = plain no-emblem build
+  emblemIds: string[];
+  isEmblem: boolean;
+  members: CompStatRow[];
+  row: CompRowVM;
+  repCompId: number;
+  repN: number;
+}
+
+export interface ResolvedFamily {
+  variants: FamilyVariant[]; // base first, then kept emblem variants (best-score order after)
+  representativeKey: string; // emblemKey of the row shown on the tier list
+  familyN: number; // total boards across the whole family (all variants)
+}
+
+/**
+ * Resolve one archetype (family) into its display variants. Split members by
+ * worn emblem set; a worse/equal emblem variant folds its members into base
+ * (a random emblem you had to play IS part of the line's honest distribution);
+ * an emblem variant that's *meaningfully better* (avg place beats base by
+ * EMBLEM_SPLIT_MIN_SWING with ≥ EMBLEM_SPLIT_MIN_N boards) stays distinct. The
+ * best-scoring surviving variant is the representative (usually the emblem one),
+ * so the plain line tucks behind it. Shared by the tier list and detail page.
+ */
+export function resolveFamily(
+  members: CompStatRow[],
+  cat: CatalogT,
+  bucketTotal: number,
+): ResolvedFamily {
+  const familyN = members.reduce((s, m) => s + (m.n ?? 0), 0);
+
+  const emblemsOf = (row: CompRowVM['identity']['emblems'], ids: string[]): void => {
+    row.length = 0;
+    for (const id of ids) {
+      const it = cat.item(id);
+      row.push({ name: it.name, iconUrl: it.iconUrl });
+    }
+  };
+
+  // Split by emblem set.
+  const byEmblem = new Map<string, CompStatRow[]>();
+  for (const m of members) {
+    const key = emblemsFromSig(m.signature).join('|');
+    const arr = byEmblem.get(key);
+    if (arr) arr.push(m);
+    else byEmblem.set(key, [m]);
+  }
+
+  const raw = [...byEmblem].map(([emblemKey, sub]) => {
+    const built = buildArchetypeRow(sub, cat, bucketTotal);
+    return { emblemKey, sub, built };
+  });
+
+  // Base = the no-emblem variant, else the most-played.
+  let base = raw.find((v) => v.emblemKey === '');
+  if (!base) base = raw.reduce((a, b) => (b.built.row.metrics.n > a.built.row.metrics.n ? b : a));
+
+  // Keep meaningfully-better emblem variants; fold the rest into base. The
+  // keep-floor scales with the line's total play (adaptive), so a thin variant
+  // of a popular line can't headline.
+  const minVariantN = Math.max(EMBLEM_SPLIT_MIN_N_FLOOR, Math.ceil(familyN * EMBLEM_SPLIT_MIN_N_FRAC));
+  const baseM = base.built.row.metrics;
+  const kept: typeof raw = [];
+  let baseMembers = [...base.sub];
+  for (const v of raw) {
+    if (v === base) continue;
+    const vm = v.built.row.metrics;
+    const swing = baseM.avgPlacement - vm.avgPlacement; // + = emblem better
+    const combinedSem = Math.sqrt(baseM.placementSem ** 2 + vm.placementSem ** 2) || Infinity;
+    const keep =
+      v.emblemKey !== '' &&
+      swing >= EMBLEM_SPLIT_MIN_SWING &&
+      swing >= EMBLEM_SPLIT_SIG_K * combinedSem &&
+      vm.n >= minVariantN;
+    if (keep) kept.push(v);
+    else baseMembers = baseMembers.concat(v.sub);
+  }
+
+  // Build the base row from its OWN comps (base.sub) so the identity, example
+  // board, and its denominator (repN) all agree — a no-emblem board on a
+  // no-emblem base (a folded-in emblem board must never be the base thumbnail).
+  // Then override just the metrics with the folded pool (base + the
+  // non-impactful emblems it absorbed). Badge = base's own emblem set (empty for
+  // a no-emblem base; the emblem for an emblem-only line).
+  const baseBoard = buildArchetypeRow(base.sub, cat, bucketTotal);
+  baseBoard.row.metrics = computeMetrics(poolStats(baseMembers));
+  if (!baseBoard.row.isManual) baseBoard.row.tier = scoreToTier(baseBoard.row.metrics.score);
+  const baseIds = base.emblemKey ? base.emblemKey.split('|') : [];
+  emblemsOf(baseBoard.row.identity.emblems, baseIds);
+  const variants: FamilyVariant[] = [
+    {
+      emblemKey: base.emblemKey,
+      emblemIds: baseIds,
+      isEmblem: base.emblemKey !== '',
+      members: baseMembers,
+      row: baseBoard.row,
+      repCompId: baseBoard.repCompId,
+      repN: baseBoard.repN,
+    },
+  ];
+  for (const k of kept) {
+    const ids = k.emblemKey.split('|');
+    emblemsOf(k.built.row.identity.emblems, ids);
+    variants.push({
+      emblemKey: k.emblemKey,
+      emblemIds: ids,
+      isEmblem: true,
+      members: k.sub,
+      ...k.built,
+    });
+  }
+
+  let rep = variants[0];
+  for (const v of variants) if (v.row.metrics.score > rep.row.metrics.score) rep = v;
+  return { variants, representativeKey: rep.emblemKey, familyN };
+}
+
+/** Tier-list row for a family: the representative variant, with the family's
+ *  total play rate and a variant count for the "+N variants" marker. */
+function foldFamily(
+  members: CompStatRow[],
+  cat: CatalogT,
+  bucketTotal: number,
+): { row: CompRowVM; repCompId: number; repN: number } {
+  const fam = resolveFamily(members, cat, bucketTotal);
+  const rep = fam.variants.find((v) => v.emblemKey === fam.representativeKey) ?? fam.variants[0];
+  rep.row.variantCount = fam.variants.length;
+  rep.row.playRate = bucketTotal > 0 ? fam.familyN / bucketTotal : 0;
+  return { row: rep.row, repCompId: rep.repCompId, repN: rep.repN };
 }
 
 function collectRows(groups: TierGroupVM[], niche: CompRowVM[] | null): CompRowVM[] {
@@ -456,34 +691,33 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
 
   const { patchId, region, rankBucket } = selection;
 
-  // Bucket total (play-rate denominator) + pooled group keys in parallel. The
+  // Bucket total (play-rate denominator) + per-archetype pooled n & score. The
   // group key is 'm:<meta_comp>' ('c:<id>' for unlabeled comps), and the tier
   // floor applies to the POOLED n — an archetype whose members are individually
   // tiny still qualifies once the line has enough boards.
-  const GKEY_SQL = `COALESCE('m:' || NULLIF(c.meta_comp, ''), 'c:' || c.id::text)`;
-  const [totalRows, groupRows] = await Promise.all([
+  const [totalRows, archScores] = await Promise.all([
     query<{ total_boards: number }>(
       `SELECT total_boards FROM bucket_totals
         WHERE patch_id = $1 AND region = $2 AND rank_bucket = $3`,
       [patchId, region, rankBucket],
     ),
-    query<{ gkey: string; pooled_n: number }>(
-      `SELECT ${GKEY_SQL} AS gkey, SUM(cs.n)::int AS pooled_n
-         FROM comp_stats cs
-         JOIN comps c ON c.id = cs.comp_id
-        WHERE cs.patch_id = $1 AND cs.region = $2 AND cs.rank_bucket = $3
-        GROUP BY 1`,
-      [patchId, region, rankBucket],
-    ),
+    loadArchetypeScores(patchId, region, rankBucket),
   ]);
   const bucketTotal = totalRows[0]?.total_boards ?? 0;
 
-  const mainGroups = groupRows.filter((g) => g.pooled_n >= TIER_MIN_SAMPLE);
-  const nicheGroups = groupRows
-    .filter((g) => g.pooled_n < TIER_MIN_SAMPLE)
-    .sort((a, b) => b.pooled_n - a.pooled_n)
+  // A merge archetype (gkey) is the emblem "family": emblem and non-emblem
+  // comps of one line share it (the emblem-class merge guard is off). The floor
+  // applies to the family's pooled n; one row renders per family, and emblem
+  // variants are split/folded inside it at read time.
+  const mainGroups = archScores.filter((g) => g.pooledN >= TIER_MIN_SAMPLE);
+  const nicheGroups = archScores
+    .filter((g) => g.pooledN < TIER_MIN_SAMPLE)
+    .sort((a, b) => b.pooledN - a.pooledN)
     .slice(0, NICHE_LIMIT);
-  const nicheAvailable = groupRows.length - mainGroups.length;
+  const nicheAvailable = archScores.length - mainGroups.length;
+  const mainKeySet = new Set(mainGroups.map((g) => g.gkey));
+  // Dynamic tier cutoffs from this bucket's archetype score distribution.
+  const cutoffs = tierCutoffs(mainGroups.map((g) => g.score));
 
   // Member rows (stats + identity + manual pins) for every group we'll render.
   const wantedKeys = [
@@ -510,18 +744,22 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
 
   const cat = await getCatalog();
 
-  // Pool each group's sufficient stats into one row. Track each
-  // representative's OWN n for its example-board denominator.
-  const mainKeySet = new Set(mainGroups.map((g) => g.gkey));
+  // Each archetype (gkey) is a family: split its members into emblem variants
+  // (by each comp's signature emblems), then fold to one representative row
+  // (see foldFamily). Track each representative's OWN n for its example board.
   const repOwnN = new Map<number, number>();
   const archetypeRows: CompRowVM[] = [];
   const nicheRows: CompRowVM[] = [];
   for (const [gkey, members] of groupByKey(memberRows)) {
-    const { row, repCompId, repN } = buildArchetypeRow(members, cat, bucketTotal);
+    const { row, repCompId, repN } = foldFamily(members, cat, bucketTotal);
     repOwnN.set(repCompId, repN);
     if (mainKeySet.has(gkey)) archetypeRows.push(row);
     else nicheRows.push(row);
   }
+
+  // Apply the bucket's dynamic tier cutoffs (manual pins keep their tier).
+  for (const row of archetypeRows) if (!row.isManual) row.tier = tierForScore(row.metrics.score, cutoffs);
+  for (const row of nicheRows) if (!row.isManual) row.tier = tierForScore(row.metrics.score, cutoffs);
 
   // Bucket archetype rows into tiers (recomputed from the pooled score), ordering
   // within each tier by score desc.

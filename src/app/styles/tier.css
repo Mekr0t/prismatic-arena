@@ -198,3 +198,12 @@
 }
 .rr-tag.tag-reroll { color: #0E1320; background: #F2C14E; }
 .rr-tag.tag-fast   { color: #0E1320; background: #6F9BF2; }
+.rr-tag.tag-emblem {
+  color: #0E1320; background: #C69BE8;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.rr-emb-icon { width: 13px; height: 13px; border-radius: 3px; }
+.rr-variants {
+  font-size: 10px; font-weight: 600; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap;
+}

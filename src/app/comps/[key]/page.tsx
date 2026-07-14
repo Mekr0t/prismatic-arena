@@ -22,7 +22,7 @@ export default async function CompDetailPage({
   searchParams,
 }: {
   params: Promise<{ key: string }>;
-  searchParams: Promise<{ patch?: string; region?: string; bucket?: string }>;
+  searchParams: Promise<{ patch?: string; region?: string; bucket?: string; variant?: string }>;
 }) {
   const { key } = await params;
   const sp = await searchParams;
@@ -32,6 +32,7 @@ export default async function CompDetailPage({
     patchId: Number.isFinite(patchId) ? patchId : undefined,
     region: sp.region,
     rankBucket: sp.bucket,
+    variant: sp.variant,
   });
   if (!detail) notFound();
 
@@ -40,10 +41,12 @@ export default async function CompDetailPage({
     region: detail.selection.region,
     bucket: detail.selection.rankBucket,
   });
+  // Base href for variant links: same key + selection, swap the ?variant.
+  const variantBase = `/comps/${encodeURIComponent(decodeKey(key))}?${back.toString()}`;
 
   return (
     <main className="page">
-      <CompDetail detail={detail} backHref={`/comps?${back.toString()}`} />
+      <CompDetail detail={detail} backHref={`/comps?${back.toString()}`} variantBase={variantBase} />
     </main>
   );
 }

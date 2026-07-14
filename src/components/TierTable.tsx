@@ -51,6 +51,17 @@ function CompRow({ row, detailQuery }: { row: CompRowVM; detailQuery: string }) 
             {row.identity.heroAugmentUnit} Hero Aug
           </span>
         )}
+        {row.identity.emblems.map((e) => (
+          <span key={e.name} className="rr-tag tag-emblem" title="Emblem build — split for stats">
+            {e.iconUrl && <img src={e.iconUrl} alt="" className="rr-emb-icon" />}
+            {e.name}
+          </span>
+        ))}
+        {row.variantCount > 1 && (
+          <span className="rr-variants" title="This line has multiple variants — open for details">
+            +{row.variantCount - 1} variant{row.variantCount > 2 ? 's' : ''}
+          </span>
+        )}
       </div>
       <ExampleTeam team={row.exampleTeam} />
       <StatCell row={row} />

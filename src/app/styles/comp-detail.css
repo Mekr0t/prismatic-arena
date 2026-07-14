@@ -214,6 +214,48 @@
   color: var(--gold);
 }
 
+/* ── Emblem-variant switcher ────────────────────────────────────────────── */
+
+.cd-variants {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.cd-variants-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-right: 2px;
+}
+.cd-variant {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12px;
+}
+.cd-variant:hover {
+  border-color: var(--text-dim);
+}
+.cd-variant.active {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.cd-variant-label {
+  font-weight: 600;
+}
+.cd-variant-stat {
+  color: var(--text-dim);
+}
+
 /* ── Panel tabs ─────────────────────────────────────────────────────────── */
 
 .cd-tabs {

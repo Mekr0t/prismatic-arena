@@ -259,7 +259,15 @@ function TrendChart({ trend }: { trend: DetailTrendPointVM[] }) {
   );
 }
 
-export function CompDetail({ detail, backHref }: { detail: CompDetailVM; backHref: string }) {
+export function CompDetail({
+  detail,
+  backHref,
+  variantBase,
+}: {
+  detail: CompDetailVM;
+  backHref: string;
+  variantBase: string;
+}) {
   const id = detail.identity;
   const m = detail.metrics;
   // Placement distribution is the universal default; hit states take over as
@@ -293,6 +301,12 @@ export function CompDetail({ detail, backHref }: { detail: CompDetailVM; backHre
             {id.heroAugmentUnit && (
               <span className="rr-tag tag-reroll">{id.heroAugmentUnit} Hero Aug</span>
             )}
+            {id.emblems.map((e) => (
+              <span key={e.name} className="rr-tag tag-emblem">
+                {e.iconUrl && <img src={e.iconUrl} alt="" className="rr-emb-icon" />}
+                {e.name}
+              </span>
+            ))}
           </div>
         </div>
         <div className="cd-stats">
@@ -318,6 +332,31 @@ export function CompDetail({ detail, backHref }: { detail: CompDetailVM; backHre
           </div>
         </div>
       </header>
+
+      {detail.variantOptions.length > 1 && (
+        <div className="cd-variants">
+          <span className="cd-variants-label">Variants</span>
+          {detail.variantOptions.map((v) => {
+            const href = v.key
+              ? `${variantBase}&variant=${encodeURIComponent(v.key)}`
+              : variantBase;
+            return (
+              <Link
+                key={v.key || 'base'}
+                href={href}
+                className={`cd-variant${v.selected ? ' active' : ''}`}
+                scroll={false}
+              >
+                <span className={`tier-badge t-${v.tier}`}>{v.tier}</span>
+                <span className="cd-variant-label">{v.label}</span>
+                <span className="cd-variant-stat">
+                  {fmtAvg(v.avgPlacement)} avg · {v.n.toLocaleString()}
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      )}
 
       <div className="cd-strips">
         <div className="cd-strip">

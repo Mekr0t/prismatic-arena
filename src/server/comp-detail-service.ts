@@ -22,12 +22,15 @@ import { loadExampleTeams } from './comps-example-team';
 import {
   loadCombos,
   resolveSelection,
-  buildArchetypeRow,
+  resolveFamily,
+  bucketTierCutoffs,
   asCarries,
   type CompStatRow,
 } from './comps-service';
+import { tierForScore } from './queue/comp-stats-math';
 import type {
   CompDetailVM,
+  DetailVariantOptionVM,
   DetailUnitVM,
   DetailStarLineVM,
   DetailVariantVM,
@@ -132,8 +135,8 @@ export async function getCompDetail(
   if (!selection) return null;
   const { patchId, region, rankBucket } = selection;
 
-  // ── Members of this group in the selected bucket. ───────────────────────────
-  const members = await query<CompStatRow>(
+  // ── Members of this group (family) in the selected bucket. ──────────────────
+  const familyMembers = await query<CompStatRow>(
     `SELECT cs.comp_id, c.set_number, c.name, c.archetype, c.signature, c.key_traits, c.carries,
             ${GKEY_SQL} AS gkey,
             cs.n, cs.placement_sum, cs.placement_sumsq, cs.top4_count, cs.win_count,
@@ -147,7 +150,7 @@ export async function getCompDetail(
         AND ${GKEY_SQL} = $4`,
     [patchId, region, rankBucket, groupKey],
   );
-  if (members.length === 0) return null;
+  if (familyMembers.length === 0) return null;
 
   const [totalRows, cat] = await Promise.all([
     query<{ total_boards: number }>(
@@ -159,8 +162,30 @@ export async function getCompDetail(
   ]);
   const bucketTotal = totalRows[0]?.total_boards ?? 0;
 
-  // Header = the same pooled row the tier list renders.
-  const { row: header, repCompId, repN } = buildArchetypeRow(members, cat, bucketTotal);
+  // Resolve the emblem-variant family; show the chosen variant (or the
+  // representative). All the aggregations below scope to that variant's members.
+  const fam = resolveFamily(familyMembers, cat, bucketTotal);
+  // Dynamic tiers from the same bucket distribution the tier list uses.
+  const cutoffs = await bucketTierCutoffs(patchId, region, rankBucket);
+  for (const v of fam.variants) if (!v.row.isManual) v.row.tier = tierForScore(v.row.metrics.score, cutoffs);
+  const selected =
+    fam.variants.find((v) => v.emblemKey === (q.variant ?? fam.representativeKey)) ??
+    fam.variants.find((v) => v.emblemKey === fam.representativeKey) ??
+    fam.variants[0];
+  const variantOptions: DetailVariantOptionVM[] = fam.variants.map((v) => ({
+    key: v.emblemKey,
+    label: v.isEmblem ? v.row.identity.emblems.map((e) => e.name).join(', ') : 'No emblem',
+    emblems: v.row.identity.emblems,
+    tier: v.row.tier,
+    avgPlacement: v.row.metrics.avgPlacement,
+    n: v.row.metrics.n,
+    selected: v.emblemKey === selected.emblemKey,
+  }));
+
+  const header = selected.row;
+  const repCompId = selected.repCompId;
+  const repN = selected.repN;
+  const members = selected.members;
 
   const memberIds = members.map((m) => m.comp_id);
   const carryIds = header.identity.carries.map((c) => c.characterId);
@@ -530,6 +555,8 @@ export async function getCompDetail(
   return {
     selection,
     groupKey,
+    variantOptions,
+    selectedVariant: selected.emblemKey,
     identity: header.identity,
     metrics: header.metrics,
     playRate: header.playRate,

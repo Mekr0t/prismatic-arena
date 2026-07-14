@@ -73,6 +73,10 @@ export interface CompRowInput {
   rawRows: RawUnitItem[];
   /** Static unit cost lookup for this comp's set; 0 if unknown. */
   costOf: (characterId: string) => number;
+  /** Worn trait-emblem item ids for this comp (parsed from the signature by the
+   *  merge stage). All boards in a comp share the same emblems (part of the
+   *  cluster signature), so this is comp-wide. Defaults to none. */
+  emblems?: string[];
 }
 
 // core_units is a MULTISET: the duplicate-copy augment lists a unit more than
@@ -102,7 +106,7 @@ function splitMultiset(
 /** Build the merge-ready profile for one comp. Pure — no DB, no env reads
  *  beyond the module-level knobs. */
 export function buildCompProfile(input: CompRowInput): CompProfile {
-  const { compId, setNumber, coreUnits, threeStars, statTotal, rawRows, costOf } = input;
+  const { compId, setNumber, coreUnits, threeStars, statTotal, rawRows, costOf, emblems } = input;
 
   const { units, copySig } = splitMultiset(coreUnits, costOf);
 
@@ -179,6 +183,7 @@ export function buildCompProfile(input: CompRowInput): CompProfile {
     carryGrade3,
     copySig,
     heroAugmentSig,
+    emblemSig: [...new Set(emblems ?? [])].sort().join('|'),
     boardCount: statTotal > 0 ? statTotal : totalBoards,
   };
 }
@@ -194,6 +199,10 @@ export interface TailRowInput {
   statTotal: number;
   /** Static unit cost lookup for this comp's set; 0 if unknown (copySig gate). */
   costOf: (characterId: string) => number;
+  /** Worn trait-emblem item ids (parsed from the signature) — the emblem-class
+   *  guard must apply to the tail too, else emblem boards leak into the plain
+   *  line. Defaults to none. */
+  emblems?: string[];
 }
 
 /**
@@ -203,7 +212,8 @@ export interface TailRowInput {
  * evidence by presence of the archetype's carries on the board), `carryGrade3`
  * is the FULL 3★ set (itemization unknown; the conflict-only rule still
  * applies), `heroAugmentSig` is '' (the tail only joins classic archetypes),
- * and unit weights are neutral (its units are its whole evidence).
+ * and unit weights are neutral (its units are its whole evidence). `emblemSig`
+ * is kept (from the signature) so an emblem tail board doesn't join the plain line.
  */
 export function buildTailProfile(input: TailRowInput): CompProfile {
   const { units, copySig } = splitMultiset(input.coreUnits, input.costOf);
@@ -216,6 +226,7 @@ export function buildTailProfile(input: TailRowInput): CompProfile {
     carryGrade3: new Set(input.threeStars),
     copySig,
     heroAugmentSig: '',
+    emblemSig: [...new Set(input.emblems ?? [])].sort().join('|'),
     boardCount: input.statTotal,
   };
 }
