@@ -40,6 +40,11 @@ export async function resolveAccounts(
   );
   const known = new Set<string>();
   for (const r of rows) {
+    // A row with a NULL name is a frontier stub (the crawler registers
+    // discovered puuids as name-less candidates) — treat it as a miss so the
+    // name still gets resolved from Riot and persisted, otherwise every
+    // crawler-discovered player renders as a truncated puuid forever.
+    if (r.game_name === null) continue;
     result.set(r.puuid, { gameName: r.game_name, tagLine: r.tag_line });
     known.add(r.puuid);
   }

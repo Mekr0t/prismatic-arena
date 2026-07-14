@@ -9,19 +9,22 @@ const TFT_DATA_URL =
   'https://raw.communitydragon.org/latest/cdragon/tft/en_us.json';
 
 // ── Community Dragon shapes (loose — fields are accessed defensively) ─────────
+interface CDragonTraitEffect {
+  minUnits?: number;
+  maxUnits?: number | null;
+  style?: number;
+  min?: number;
+  max?: number;
+  // CDragon variable values are usually numbers but can be strings/arrays for
+  // some traits — callers guard with `typeof v === 'number'`.
+  variables?: Record<string, unknown>;
+}
 interface CDragonTrait {
   apiName?: string;
   name?: string; // display name, e.g. "Assassin"
   desc?: string; // general trait description
   icon?: string;
-  effects?: {
-    minUnits?: number;
-    maxUnits?: number | null;
-    style?: number;
-    min?: number;
-    max?: number;
-    variables?: Record<string, number>;
-  }[];
+  effects?: CDragonTraitEffect[];
 }
 interface CDragonChampion {
   apiName?: string; // e.g. "TFT17_Ezreal" — matches match-v1 character_id
@@ -188,9 +191,9 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
   for (const e of effects) {
     if (typeof e.minUnits === 'number' && !('MinUnits' in introEffMap))
       introEffMap['MinUnits'] = e.minUnits;
-    const vars = (e as any).variables ?? {};
+    const vars = e.variables ?? {};
     for (const [k, v] of Object.entries(vars)) {
-      if (typeof v === 'number' && !(k in introEffMap)) introEffMap[k] = v as number;
+      if (typeof v === 'number' && !(k in introEffMap)) introEffMap[k] = v;
     }
   }
 
@@ -206,7 +209,7 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
     if (rowHtml == null) return null;
     const effMap: Record<string, number> = {};
     if (typeof e.minUnits === 'number') effMap.MinUnits = e.minUnits;
-    const vars = (e as any).variables ?? {};
+    const vars = e.variables ?? {};
     for (const [k, v] of Object.entries(vars)) if (typeof v === 'number') effMap[k] = v;
     const line = resolveDesc(rowHtml, effMap);
     // The badge already shows the unit count, so drop a leading "(N)" the row
@@ -221,19 +224,19 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
 const TRAIT_META = new Set(['minUnits', 'maxUnits', 'style', 'min', 'max']);
 
 // Builds a per-variable range string from all breakpoint levels, e.g. { Damage: "15/25/40" }.
-function buildTraitEffectsMap(effects: Record<string, any>[]): Record<string, string> {
+function buildTraitEffectsMap(effects: CDragonTraitEffect[]): Record<string, string> {
   const byVar = new Map<string, number[]>();
 
   for (const e of effects) {
     // Expose MinUnits/MaxUnits so @MinUnits@ resolves in desc
-    if (typeof e['minUnits'] === 'number') {
+    if (typeof e.minUnits === 'number') {
       const arr = byVar.get('MinUnits') ?? [];
-      arr.push(e['minUnits']);
+      arr.push(e.minUnits);
       byVar.set('MinUnits', arr);
     }
 
     // Values nested under variables
-    const vars: Record<string, number> = e['variables'] ?? {};
+    const vars = e.variables ?? {};
     for (const [k, v] of Object.entries(vars)) {
       if (typeof v !== 'number') continue;
       const arr = byVar.get(k) ?? [];

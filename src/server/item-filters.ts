@@ -11,6 +11,13 @@ export const COMPONENT_IDS = new Set([
   'TFT_Item_FryingPan',
 ]);
 
+// Superset used when counting "completed" items on a board: components plus
+// EmptyBag (a filler slot in match data, not a buildable component). Everything
+// NOT in this set (finished items, radiants, artifacts, trait emblems) counts
+// as completed. Shared by carry-classify, comps-example-team, and
+// comp-detail-service so the three paths can never drift apart.
+export const COMPONENT_ITEMS = new Set([...COMPONENT_IDS, 'TFT_Item_EmptyBag']);
+
 export const ITEM_JUNK =
   /Grant|Tutorial|Trainer|Encounter|Tooltip|Debug|Test|Placeholder|Consumable|Reforger|Remover|Duplicator|Magnetic|TacticianCrown|Choncc|Unstable|Component$/i;
 

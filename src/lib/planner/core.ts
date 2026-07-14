@@ -129,8 +129,8 @@ export function encodeBoard(board: Cell[]): string {
 }
 
 // ── official Riot TFT team-planner format ────────────────────────────────────
-// Format: "01" + up to 10 × 2-digit uppercase hex (champion plannerCode, "00" = empty) + "TFTSetN"
-// Example: "010E0F01...TFTSet17"
+// Format: "02" + 10 × 3-digit uppercase hex (champion plannerCode, "000" = empty) + "TFTSetN"
+// Example: "0200E00F001...TFTSet17"
 // Positions are not stored; order is preserved but not board cells.
 
 /**

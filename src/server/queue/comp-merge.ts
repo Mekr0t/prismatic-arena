@@ -604,11 +604,20 @@ export function assignTail(
     if (REQUIRE_HERO_AUGMENT_CLASS && comp.heroAugmentSig !== arch.heroAugmentSig) continue;
     if (REQUIRE_EMBLEM_CLASS && comp.emblemSig !== arch.emblemSig) continue;
 
+    // Strong carry agreement buys the same unit slack the main path grants
+    // (jaccard + score bars only — containment and class guards never relax).
+    // Tail profiles carry NEUTRAL unit weights (no itemization evidence), so a
+    // couple of swapped cap units hit the jaccard at full weight; without this
+    // slack a board that fields every carry the line demands — same doubles,
+    // same 3★s — was left unlabeled over a hundredth of jaccard (the niche
+    // "Space Groove Ornn Samira" case: jaccard 0.598 vs the 0.60 floor).
+    const slack = carryOverlap >= STRONG_CARRY_OVERLAP ? STRONG_CARRY_SLACK : 0;
+
     const { containment, jaccard } = weightedOverlap(comp, arch.unitWeights);
-    if (containment < MIN_CONTAINMENT || jaccard < MIN_JACCARD) continue;
+    if (containment < MIN_CONTAINMENT || jaccard < MIN_JACCARD - slack) continue;
 
     const score = UNIT_WEIGHT * containment + JACCARD_WEIGHT * jaccard + CARRY_WEIGHT * carryOverlap;
-    if (score < SCORE_THRESHOLD + ASSIGN_MARGIN) continue;
+    if (score < SCORE_THRESHOLD + ASSIGN_MARGIN - slack) continue;
 
     if (score > bestScore) {
       bestScore = score;

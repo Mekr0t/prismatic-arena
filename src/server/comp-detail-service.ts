@@ -18,6 +18,7 @@
 
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
+import { COMPONENT_ITEMS } from './item-filters';
 import { loadExampleTeams } from './comps-example-team';
 import {
   loadCombos,
@@ -25,6 +26,7 @@ import {
   resolveFamily,
   bucketTierCutoffs,
   asCarries,
+  GKEY_SQL,
   type CompStatRow,
 } from './comps-service';
 import { tierForScore } from './queue/comp-stats-math';
@@ -68,25 +70,8 @@ const BUILD_SET_CAP = 3; // item sets shown per carry
 const BUILD_SET_MIN_BOARDS = 5;
 const BUILD_COMPLETE_ITEMS = 3; // completed items that make a board "itemized"
 
-// Base components — excluded when counting completed items (same set the
-// example-team and carry-classify paths use).
-const COMPONENT_ITEMS = new Set<string>([
-  'TFT_Item_BFSword',
-  'TFT_Item_RecurveBow',
-  'TFT_Item_NeedlesslyLargeRod',
-  'TFT_Item_TearOfTheGoddess',
-  'TFT_Item_ChainVest',
-  'TFT_Item_NegatronCloak',
-  'TFT_Item_GiantsBelt',
-  'TFT_Item_SparringGloves',
-  'TFT_Item_Spatula',
-  'TFT_Item_FryingPan',
-  'TFT_Item_EmptyBag',
-]);
-
-type CatalogT = Awaited<ReturnType<typeof getCatalog>>;
-
-const GKEY_SQL = `COALESCE('m:' || NULLIF(c.meta_comp, ''), 'c:' || c.id::text)`;
+// Completed-item counting excludes the shared COMPONENT_ITEMS set from
+// item-filters.ts (same set the example-team and carry-classify paths use).
 
 interface UnitStarRow {
   character_id: string;
@@ -395,8 +380,12 @@ export async function getCompDetail(
   }
   units.sort((a, b) => b.freq - a.freq || a.name.localeCompare(b.name));
 
+  // Label carries are pinned into core regardless of frequency: they NAME the
+  // comp (the merge label's itemized carries), so showing one under "Flex"
+  // reads as a contradiction even when its play rate dips below the floor.
+  const carrySet = new Set(carryIds);
   const core = units
-    .filter((u) => u.freq >= CORE_MIN_FREQ)
+    .filter((u) => u.freq >= CORE_MIN_FREQ || carrySet.has(u.characterId))
     .sort((a, b) => b.cost - a.cost || b.freq - a.freq);
   const coreIds = new Set(core.map((u) => u.characterId));
   const flex = units
@@ -524,9 +513,25 @@ export async function getCompDetail(
     team: teams.get(m.comp_id) ?? { units: [], traits: [] },
   }));
 
+  // Backfill per-unit items from the representative board's example team when
+  // the builds path found nothing — small samples rarely clear
+  // BUILD_SET_MIN_BOARDS, which left the core/flex strips and units table bare
+  // while the tier list (which uses this same example-team source) showed
+  // items. Builds-based sets still win when present. `core`/`flex`/`unitsTable`
+  // share these unit objects, so one pass covers all three.
+  const repTeam = teams.get(repCompId);
+  if (repTeam) {
+    const repItems = new Map<string, ExampleItemVM[]>();
+    for (const u of repTeam.units) {
+      if (u.items.length > 0 && !repItems.has(u.characterId)) repItems.set(u.characterId, u.items);
+    }
+    for (const u of units) {
+      if (u.items.length === 0) u.items = repItems.get(u.characterId) ?? [];
+    }
+  }
+
   // Backfill the header's trait chips + display name from the rep's example
   // team, exactly like the tier list does.
-  const repTeam = teams.get(repCompId);
   if (header.identity.keyTraits.length === 0 && repTeam && repTeam.traits.length > 0) {
     const top = [...repTeam.traits]
       .sort(

@@ -41,6 +41,16 @@ export function isEmblemItem(itemId: string): boolean {
   return /Emblem/i.test(itemId);
 }
 
+/** Parse the worn-emblem item ids back out of a signature (`emb:<id>` tokens),
+ *  sorted. Lives here — next to the code that writes the token format — so the
+ *  read side (comps-service) and the merge stage can't drift apart. */
+export function emblemsFromSignature(signature: string | null | undefined): string[] {
+  if (!signature) return [];
+  const out: string[] = [];
+  for (const tok of signature.split('|')) if (tok.startsWith('emb:')) out.push(tok.slice(4));
+  return out.sort();
+}
+
 // 1★ and 2★ collapse to "lo"; 3★ is its own bucket — the only star distinction
 // that splits identity.
 function starBucket(star: number): string {

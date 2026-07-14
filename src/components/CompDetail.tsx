@@ -337,9 +337,11 @@ export function CompDetail({
         <div className="cd-variants">
           <span className="cd-variants-label">Variants</span>
           {detail.variantOptions.map((v) => {
-            const href = v.key
-              ? `${variantBase}&variant=${encodeURIComponent(v.key)}`
-              : variantBase;
+            // Always send an explicit variant (empty = base): with the param
+            // omitted the server falls back to the REPRESENTATIVE variant,
+            // which is usually the emblem one — so the base pill would just
+            // re-render the emblem variant and the switch went nowhere.
+            const href = `${variantBase}&variant=${encodeURIComponent(v.key)}`;
             return (
               <Link
                 key={v.key || 'base'}

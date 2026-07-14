@@ -31,7 +31,9 @@ interface Loaded {
 let cache: Loaded | null = null;
 let loading: Promise<Loaded> | null = null;
 
-async function currentSet(): Promise<number> {
+/** Current set number: the is_current patch's set, else the newest set with
+ *  loaded units. Shared by library-data and planner-data. */
+export async function currentSet(): Promise<number> {
   const current = await query<{ set_number: number }>(
     `SELECT set_number FROM patches WHERE is_current = true ORDER BY set_number DESC LIMIT 1`,
   );
@@ -115,6 +117,10 @@ export async function getCatalog(): Promise<Catalog> {
       .finally(() => {
         loading = null;
       });
+    // Background revalidation (warm cache) has no awaiter — attach a no-op
+    // handler so a transient DB failure can't become a fatal unhandled
+    // rejection. Cold-start callers still await `loading` and see the error.
+    loading.catch(() => {});
   }
   const loaded = cache ?? (await loading!);
   return toCatalog(loaded);

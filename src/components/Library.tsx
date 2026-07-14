@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import type { LibraryData, LibUnit, LibTrait, LibItem, LibAugment, AugmentTier } from '@/server/library-data';
-import { RichText, richFirstLine } from '@/lib/rich-text';
+import { RichText } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
 
 type Tab = 'units' | 'traits' | 'items' | 'augments';
@@ -29,13 +29,6 @@ type TooltipState = { text?: string; trait?: LibTrait; x: number; y: number } | 
 export default function Library({ data }: { data: LibraryData }) {
   const [tab, setTab] = useState<Tab>('units');
   const [tooltip, setTooltip] = useState<TooltipState>(null);
-
-  const showTooltip = useCallback((e: React.MouseEvent, text: string | undefined) => {
-    if (!text) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.min(r.left, window.innerWidth - 252);
-    setTooltip({ text, x, y: r.bottom + 6 });
-  }, []);
 
   // Rich trait hover: full effect + all breakpoints (not just a first line).
   const showTraitTooltip = useCallback((e: React.MouseEvent, trait: LibTrait | undefined) => {

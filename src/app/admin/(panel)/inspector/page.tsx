@@ -1,9 +1,7 @@
-// Reference admin page for the merge archetype inspector.
-//
-// Drop-in starting point — move it under your real admin route and gate it behind
-// your admin auth. Styling is minimal inline (dark-friendly); swap for your global
-// CSS classes. Uses native <details>/<summary>, so expand/collapse needs no client
-// JS and this stays a pure server component.
+// Admin page for the merge archetype inspector. Lives in the guarded (panel)
+// route group, so requireAdmin() in the layout covers it. Styling is minimal
+// inline (dark-friendly). Uses native <details>/<summary>, so expand/collapse
+// needs no client JS and this stays a pure server component.
 
 import { loadArchetypeInspector } from '@/server/comp-inspector';
 

@@ -5,6 +5,7 @@
 
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
+import { COMPONENT_ITEMS } from './item-filters';
 import type {
   ExampleItemVM,
   ExampleUnitVM,
@@ -69,21 +70,9 @@ const EX_ITEM_CAP = num(process.env.EX_ITEM_CAP, 3);
 export const EMPTY_TEAM: ExampleTeamVM = { units: [], traits: [] };
 
 // Base components — excluded when counting "completed" items and from the items
-// shown. Everything NOT in this set (finished items, radiants, artifacts, trait
-// emblems) counts as completed. IDs are set-agnostic (TFT_Item_*).
-const COMPONENT_ITEMS = new Set<string>([
-  'TFT_Item_BFSword',
-  'TFT_Item_RecurveBow',
-  'TFT_Item_NeedlesslyLargeRod',
-  'TFT_Item_TearOfTheGoddess',
-  'TFT_Item_ChainVest',
-  'TFT_Item_NegatronCloak',
-  'TFT_Item_GiantsBelt',
-  'TFT_Item_SparringGloves',
-  'TFT_Item_Spatula',
-  'TFT_Item_FryingPan',
-  'TFT_Item_EmptyBag',
-]);
+// shown — are the shared COMPONENT_ITEMS set from item-filters.ts. Everything
+// NOT in it (finished items, radiants, artifacts, trait emblems) counts as
+// completed.
 
 // Thief's Gloves equips 2 random items and occupies all 3 slots — when present
 // the other "items" are ephemeral randoms that don't represent a real build.

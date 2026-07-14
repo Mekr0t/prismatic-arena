@@ -11,10 +11,12 @@
     "data:load": "tsx scripts/load-static-data.ts",
     "worker": "tsx src/server/queue/worker.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test": "tsx --test src/server/queue/comp-merge.test.ts src/server/queue/comp-profile.test.ts",
     "merge:eval": "tsx scripts/merge-eval.ts"
   },
   "dependencies": {
+    "@next/env": "^15.5.20",
     "bullmq": "^5.79.1",
     "ioredis": "^5.4.1",
     "next": "^15.1.0",
@@ -23,10 +25,13 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "dotenv": "^16.4.7",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.20",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

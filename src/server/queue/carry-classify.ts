@@ -19,6 +19,8 @@
 // where the champ is 3-star AND holds >= HERO_AUGMENT_MIN_DAMAGE_ITEMS of the
 // DAMAGE_ITEMS set. See classifyHeroAugments.
 
+import { COMPONENT_ITEMS } from '@/server/item-filters';
+
 const _num = (v: string | undefined, d: number) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
 
 const FULLY_ITEMIZED  = _num(process.env.CARRY_FULLY_ITEMIZED, 3);
@@ -33,21 +35,8 @@ const HERO_AUGMENT_MIN_DAMAGE_ITEMS = _num(process.env.HERO_AUGMENT_MIN_DAMAGE_I
 // default — same "reliably, not just once" bar as a normal bucket carry.
 const HERO_AUGMENT_RATE = _num(process.env.HERO_AUGMENT_RATE, CARRY_FULL_RATE);
 
-// ── Component items — excluded when counting "completed" items ────────────────
-
-const COMPONENT_ITEMS = new Set<string>([
-  'TFT_Item_BFSword',
-  'TFT_Item_RecurveBow',
-  'TFT_Item_NeedlesslyLargeRod',
-  'TFT_Item_TearOfTheGoddess',
-  'TFT_Item_ChainVest',
-  'TFT_Item_NegatronCloak',
-  'TFT_Item_GiantsBelt',
-  'TFT_Item_SparringGloves',
-  'TFT_Item_Spatula',
-  'TFT_Item_FryingPan',
-  'TFT_Item_EmptyBag',
-]);
+// Component items — excluded when counting "completed" items — are the shared
+// COMPONENT_ITEMS set from item-filters.ts (imported above).
 
 // ── Hero augments (set 17) ─────────────────────────────────────────────────────
 //

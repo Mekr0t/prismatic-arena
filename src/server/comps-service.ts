@@ -39,6 +39,7 @@ import {
   type TierCutoffs,
 } from './queue/comp-stats-math';
 import { loadExampleTeams, styleAtUnits, EMPTY_TEAM } from './comps-example-team';
+import { emblemsFromSignature } from './queue/comp-signature';
 import type {
   CarryPortraitVM,
   KeyTraitChipVM,
@@ -522,14 +523,6 @@ export function buildArchetypeRow(
 
 // ── Emblem variant families ─────────────────────────────────────────────────
 
-/** Worn-emblem item ids from a cluster signature (`emb:<id>` tokens), sorted. */
-export function emblemsFromSig(signature: string | null | undefined): string[] {
-  if (!signature) return [];
-  const out: string[] = [];
-  for (const tok of signature.split('|')) if (tok.startsWith('emb:')) out.push(tok.slice(4));
-  return out.sort();
-}
-
 /** One resolved variant of a family: its (possibly folded) members, built row,
  *  and emblem set. Base is emblemKey '' and carries any folded-in members. */
 export interface FamilyVariant {
@@ -575,7 +568,7 @@ export function resolveFamily(
   // Split by emblem set.
   const byEmblem = new Map<string, CompStatRow[]>();
   for (const m of members) {
-    const key = emblemsFromSig(m.signature).join('|');
+    const key = emblemsFromSignature(m.signature).join('|');
     const arr = byEmblem.get(key);
     if (arr) arr.push(m);
     else byEmblem.set(key, [m]);

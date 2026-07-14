@@ -16,6 +16,7 @@ export function TierControls({
   options,
   selection,
   niche,
+  nicheAvailable,
 }: {
   options: SelectorOptions;
   selection: TierListSelection;
@@ -104,7 +105,7 @@ export function TierControls({
 
       <label className={`tc-toggle${niche ? ' on' : ''}`}>
         <input type="checkbox" checked={niche} onChange={(e) => onNiche(e.target.checked)} />
-        Show niche
+        Show niche{nicheAvailable > 0 ? ` (${nicheAvailable})` : ''}
       </label>
     </div>
   );

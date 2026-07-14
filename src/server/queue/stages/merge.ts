@@ -27,15 +27,8 @@ import { pool } from '@/lib/db';
 import type { JobContext } from '../job-tracking';
 import { buildCompProfile, buildTailProfile } from '../comp-profile';
 import { mergeComps, assignTail, type CompProfile } from '../comp-merge';
+import { emblemsFromSignature } from '../comp-signature';
 import type { RawUnitItem } from '../carry-classify';
-
-/** Worn-emblem item ids encoded in a cluster signature as `emb:<id>` tokens. */
-function emblemsFromSignature(signature: string | null): string[] {
-  if (!signature) return [];
-  const out: string[] = [];
-  for (const tok of signature.split('|')) if (tok.startsWith('emb:')) out.push(tok.slice(4));
-  return out;
-}
 
 // TFT Ranked queue id — keep Double Up / Hyper Roll / normals out.
 const RANKED_TFT_QUEUE_ID = 1100;

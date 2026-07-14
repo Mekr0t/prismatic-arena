@@ -38,22 +38,20 @@ export default function HomePage() {
             <span className="feature-name">Leaderboards</span>
             <span className="feature-desc">Challenger, Grandmaster & Master ladders by region</span>
           </Link>
-          <div className="feature soon">
-            <span className="feature-name">
-              Comps <em>Soon</em>
-            </span>
+          <Link className="feature" href="/comps">
+            <span className="feature-name">Comps</span>
             <span className="feature-desc">Meta team comps derived from analyzed matches</span>
-          </div>
+          </Link>
           <div className="feature soon">
             <span className="feature-name">
               Tier Lists <em>Soon</em>
             </span>
-            <span className="feature-desc">Auto-ranked units, traits & comps by patch</span>
+            <span className="feature-desc">Auto-ranked units & traits by patch</span>
           </div>
-          <a className="feature" href="/planner">
+          <Link className="feature" href="/planner">
             <span className="feature-name">Team Planner</span>
             <span className="feature-desc">Build a board and export a team code</span>
-          </a>
+          </Link>
         </div>
       </section>
     </main>

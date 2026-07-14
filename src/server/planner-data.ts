@@ -2,15 +2,7 @@ import { query } from '@/lib/db';
 import { iconUrl } from '@/lib/icon-url';
 import type { PlannerData, PlannerUnit, PlannerTrait, PlannerItem, Breakpoint } from '@/lib/planner/core';
 import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK } from './item-filters';
-
-async function currentSet(): Promise<number> {
-  const cur = await query<{ set_number: number }>(
-    `SELECT set_number FROM patches WHERE is_current = true ORDER BY set_number DESC LIMIT 1`,
-  );
-  if (cur[0]) return cur[0].set_number;
-  const max = await query<{ max: number | null }>(`SELECT max(set_number)::int AS max FROM units`);
-  return max[0]?.max ?? 0;
-}
+import { currentSet } from './static-data';
 
 const TEAMPLANNER_URL =
   'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/tftchampions-teamplanner.json';
