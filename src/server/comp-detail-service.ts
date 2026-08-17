@@ -19,7 +19,7 @@
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
 import { COMPONENT_ITEMS } from './item-filters';
-import { loadExampleTeams } from './comps-example-team';
+import { loadExampleTeams, EX_POOL_MEMBER_CAP, type ExampleGroup } from './comps-example-team';
 import {
   loadCombos,
   resolveSelection,
@@ -27,9 +27,12 @@ import {
   bucketTierCutoffs,
   asCarries,
   GKEY_SQL,
+  HITS_DEFAULT_MIN_SHARE,
+  REROLL_MAX_COST,
   type CompStatRow,
 } from './comps-service';
 import { tierForScore } from './queue/comp-stats-math';
+import { emblemsFromSignature } from './queue/comp-signature';
 import type {
   CompDetailVM,
   DetailVariantOptionVM,
@@ -58,13 +61,19 @@ const num = (v: string | undefined, fallback: number): number => {
 const CORE_MIN_FREQ = num(process.env.DETAIL_CORE_MIN_FREQ, 0.75);
 const FLEX_MIN_FREQ = num(process.env.DETAIL_FLEX_MIN_FREQ, 0.25);
 const FLEX_CAP = 8;
-// Per-unit / per-star rows below this board count are noise, not signal.
+// Core + flex together must stay board-plausible — a strip pair implying an
+// 11-unit "plan" reads as nonsense.
+const STRIP_MAX_UNITS = 10;
+// Per-unit / per-star rows below this board count are noise, not signal — but
+// the floor adapts down for small samples (a 7-game niche comp would otherwise
+// render an EMPTY units table: no unit can reach 10 boards).
 const UNIT_MIN_BOARDS = 10;
+const unitFloor = (totalBoards: number): number =>
+  Math.min(UNIT_MIN_BOARDS, Math.max(1, Math.ceil(totalBoards / 2)));
 const VARIANT_CAP = 8; // hit-state rows shown before pooling into 'other'
-// Hit states are the default panel only for hit-shaped lines: at least this
-// share of the archetype's games hit SOME 3★. Below it (fast-8/9 lines where
-// 3★s are incidental) the placement distribution is the default instead.
-const HITS_DEFAULT_MIN_SHARE = num(process.env.DETAIL_HITS_DEFAULT_MIN_SHARE, 0.35);
+// Hit states are the default panel only for hit-shaped lines (share of games
+// that hit SOME 3★ ≥ HITS_DEFAULT_MIN_SHARE, shared with comps-service's rep
+// selection). Below it the placement distribution is the default instead.
 const TOP_BOARDS = 3; // most-played exact boards rendered as strips
 const BUILD_SET_CAP = 3; // item sets shown per carry
 const BUILD_SET_MIN_BOARDS = 5;
@@ -135,7 +144,23 @@ export async function getCompDetail(
         AND ${GKEY_SQL} = $4`,
     [patchId, region, rankBucket, groupKey],
   );
-  if (familyMembers.length === 0) return null;
+  if (familyMembers.length === 0) {
+    // A singleton link can go stale: the hourly merge may have labeled this
+    // comp after the list was rendered, moving it under 'm:<label>'. Resolve
+    // the comp's CURRENT group key and serve that instead of a 404.
+    if (groupKey.startsWith('c:')) {
+      const compId = Number(groupKey.slice(2));
+      if (Number.isFinite(compId)) {
+        const cur = await query<{ gkey: string }>(
+          `SELECT ${GKEY_SQL} AS gkey FROM comps c WHERE c.id = $1`,
+          [compId],
+        );
+        const nextKey = cur[0]?.gkey;
+        if (nextKey && nextKey !== groupKey) return getCompDetail(nextKey, q);
+      }
+    }
+    return null;
+  }
 
   const [totalRows, cat] = await Promise.all([
     query<{ total_boards: number }>(
@@ -168,11 +193,19 @@ export async function getCompDetail(
   }));
 
   const header = selected.row;
-  const repCompId = selected.repCompId;
-  const repN = selected.repN;
   const members = selected.members;
 
   const memberIds = members.map((m) => m.comp_id);
+  // Item-build evidence for the BASE variant excludes folded-in emblem comps:
+  // their stats pool into base (a forced random emblem is part of the line's
+  // honest distribution) but their builds must not — a worn emblem surfacing
+  // as a "best item" on the unbadged row reads as nonsense. Emblem variants
+  // keep all their members (the emblem IS their identity).
+  const buildMembers =
+    selected.emblemKey === ''
+      ? members.filter((m) => emblemsFromSignature(m.signature).length === 0)
+      : members;
+  const buildMemberIds = buildMembers.map((m) => m.comp_id);
   const carryIds = header.identity.carries.map((c) => c.characterId);
   const scope = [memberIds, patchId, region, rankBucket] as const;
 
@@ -243,7 +276,7 @@ export async function getCompDetail(
         ORDER BY snapshot_date`,
       [...scope],
     ),
-    carryIds.length === 0
+    carryIds.length === 0 || buildMemberIds.length === 0
       ? Promise.resolve([] as CarryItemRow[])
       : query<CarryItemRow>(
           `SELECT mp.id AS board_id, mp.placement, pu.character_id, pu.item_ids
@@ -254,7 +287,7 @@ export async function getCompDetail(
               AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
               AND m.queue_id = 1100
               AND pu.character_id = ANY($5::text[])`,
-          [...scope, carryIds],
+          [buildMemberIds, patchId, region, rankBucket, carryIds],
         ),
   ]);
 
@@ -352,9 +385,10 @@ export async function getCompDetail(
   }
 
   // ── Unit VMs. ───────────────────────────────────────────────────────────────
+  const minUnitBoards = unitFloor(totalBoards);
   const units: DetailUnitVM[] = [];
   for (const [characterId, acc] of unitAccs) {
-    if (acc.boards < UNIT_MIN_BOARDS) continue;
+    if (acc.boards < minUnitBoards) continue;
     const meta = cat.unit(characterId);
     if (meta.cost > 5) continue; // summons hold items but aren't board slots
     let modal = acc.stars[0];
@@ -373,7 +407,7 @@ export async function getCompDetail(
       top4Rate: rate(acc.top4, acc.boards),
       winRate: rate(acc.wins, acc.boards),
       perStar: acc.stars
-        .filter((s) => s.boards >= UNIT_MIN_BOARDS)
+        .filter((s) => s.boards >= minUnitBoards)
         .sort((a, b) => b.star - a.star),
       items: builds.find((b) => b.characterId === characterId)?.sets[0]?.items ?? [],
     });
@@ -390,7 +424,7 @@ export async function getCompDetail(
   const coreIds = new Set(core.map((u) => u.characterId));
   const flex = units
     .filter((u) => !coreIds.has(u.characterId) && u.freq >= FLEX_MIN_FREQ)
-    .slice(0, FLEX_CAP);
+    .slice(0, Math.max(0, Math.min(FLEX_CAP, STRIP_MAX_UNITS - core.length)));
 
   // ── Hit-state variants (members grouped by exact 3★ set). ───────────────────
   interface VarAcc {
@@ -496,44 +530,72 @@ export async function getCompDetail(
     prev = row;
   }
 
-  // ── Most-played exact boards, with example strips. ──────────────────────────
+  // ── Most-played exact boards + the variant-pooled header team. ──────────────
   const topMembers = [...members]
     .sort((a, b) => (b.n ?? 0) - (a.n ?? 0) || a.comp_id - b.comp_id)
     .slice(0, TOP_BOARDS);
-  const teamIds = [...new Set([repCompId, ...topMembers.map((m) => m.comp_id)])];
-  const nByComp = new Map<number, number>();
-  nByComp.set(repCompId, repN);
-  for (const m of topMembers) nByComp.set(m.comp_id, m.n ?? 0);
-  const teams = await loadExampleTeams(teamIds, patchId, region, rankBucket, nByComp, cat);
+  // Header team scope = the variant's build-evidence members (base excludes
+  // folded-in emblem comps), biggest first, bounded — the SAME pooled scope the
+  // tier list row aggregates, so the two pages can never disagree again.
+  const stripMembers = [...buildMembers]
+    .sort((a, b) => (b.n ?? 0) - (a.n ?? 0) || a.comp_id - b.comp_id)
+    .slice(0, EX_POOL_MEMBER_CAP);
+  const VARIANT_TEAM_KEY = 'variant';
+  const exGroups: ExampleGroup[] = [
+    {
+      key: VARIANT_TEAM_KEY,
+      compIds: stripMembers.map((m) => m.comp_id),
+      n: stripMembers.reduce((s, m) => s + (m.n ?? 0), 0),
+      hitTargetIds: header.identity.carries
+        .filter((c) => c.cost >= 1 && c.cost <= REROLL_MAX_COST)
+        .map((c) => c.characterId),
+    },
+    ...topMembers.map((m) => ({
+      key: String(m.comp_id),
+      compIds: [m.comp_id],
+      n: m.n ?? 0,
+    })),
+  ];
+  const teams = await loadExampleTeams(exGroups, patchId, region, rankBucket, cat);
 
   const topBoards: DetailBoardVM[] = topMembers.map((m) => ({
     compId: m.comp_id,
     n: m.n ?? 0,
     avgPlacement: (m.n ?? 0) > 0 ? Number(m.placement_sum ?? 0) / (m.n ?? 0) : 0,
-    team: teams.get(m.comp_id) ?? { units: [], traits: [] },
+    team: teams.get(String(m.comp_id)) ?? { units: [], traits: [] },
   }));
 
-  // Backfill per-unit items from the representative board's example team when
-  // the builds path found nothing — small samples rarely clear
-  // BUILD_SET_MIN_BOARDS, which left the core/flex strips and units table bare
-  // while the tier list (which uses this same example-team source) showed
-  // items. Builds-based sets still win when present. `core`/`flex`/`unitsTable`
-  // share these unit objects, so one pass covers all three.
-  const repTeam = teams.get(repCompId);
-  if (repTeam) {
-    const repItems = new Map<string, ExampleItemVM[]>();
-    for (const u of repTeam.units) {
-      if (u.items.length > 0 && !repItems.has(u.characterId)) repItems.set(u.characterId, u.items);
+  // The core/flex strips mirror the VARIANT-POOLED team — the same board the
+  // tier list renders — so items and star pips agree between the two pages
+  // (the strip is "the comp" visual; the units table keeps the aggregate
+  // per-star split). Team units are one tile per copy with stars descending,
+  // so the first tile per unit is the highest-star copy and carries the items;
+  // the tile count is the modal copies, which the strip renders (a ##dup line
+  // shows both Samira tiles, not a collapsed one). Units the pooled team
+  // doesn't field keep their builds-derived set.
+  const variantTeam = teams.get(VARIANT_TEAM_KEY);
+  if (variantTeam) {
+    const teamUnits = new Map<string, { stars: number[]; items: ExampleItemVM[] }>();
+    for (const u of variantTeam.units) {
+      const seen = teamUnits.get(u.characterId);
+      if (seen) seen.stars.push(u.star);
+      else teamUnits.set(u.characterId, { stars: [u.star], items: u.items });
     }
     for (const u of units) {
-      if (u.items.length === 0) u.items = repItems.get(u.characterId) ?? [];
+      const t = teamUnits.get(u.characterId);
+      if (!t) continue;
+      u.modalStar = t.stars[0] ?? u.modalStar;
+      u.items = t.items;
+      u.modalCopies = t.stars.length;
+      u.copyStars = t.stars;
     }
   }
 
-  // Backfill the header's trait chips + display name from the rep's example
-  // team, exactly like the tier list does.
-  if (header.identity.keyTraits.length === 0 && repTeam && repTeam.traits.length > 0) {
-    const top = [...repTeam.traits]
+  // Header trait chips + display name from the VARIANT-POOLED team traits —
+  // the same source the tier list uses, so the badge can never promise a trait
+  // tier the pooled boards don't hit (stored key_traits only as fallback).
+  if (variantTeam && variantTeam.traits.length > 0) {
+    const top = [...variantTeam.traits]
       .sort(
         (a, b) =>
           (a.unique ? 1 : 0) - (b.unique ? 1 : 0) ||

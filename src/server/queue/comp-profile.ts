@@ -26,9 +26,9 @@ import {
   classifyCarries,
   bucketCarryIds,
   classifyHeroAugments,
-  HERO_AUGMENT_CHAMPIONS,
   type RawUnitItem,
 } from './carry-classify';
+import { damageItems, heroAugmentChampions, augmentGatedUnits } from '@/server/set-config';
 import type { CompProfile } from './comp-merge';
 
 const _num = (v: string | undefined, d: number) => {
@@ -40,6 +40,11 @@ const _num = (v: string | undefined, d: number) => {
 // still rank in the top item slots (with >= 1 completed item) on at least this
 // share of boards act as the comp's carries for merge purposes.
 const FALLBACK_TOP_RATE = _num(process.env.MERGE_FALLBACK_TOP_RATE, 0.5);
+// A carry counts as a DAMAGE carry when its damage-flavored itemization rate
+// (>= 2 completed items from the set's damage pool on a board — see
+// carry-classify + set-config) reaches this share of the comp's boards.
+// Itemized tanks/supports sit near 0.
+const DAMAGE_CARRY_MIN_RATE = _num(process.env.MERGE_DAMAGE_CARRY_MIN_RATE, 0.25);
 // How many fallback carries at most — mirrors carry-classify's TOP_ITEM_SLOTS.
 const FALLBACK_MAX = 2;
 
@@ -60,6 +65,17 @@ const FLEX_MAX_ITEM_RATE = _num(process.env.MERGE_FLEX_MAX_ITEM_RATE, 0.25);
 // never classify.
 const COPY_MAX_COST = _num(process.env.MERGE_COPY_MAX_COST, 3);
 
+// Augment-gated units (set-specific — set-config.augmentGatedUnits; set 17:
+// Invader Zed — "On Stage 4-2, gain a Zed", never in shops otherwise). A board
+// fielding one is a different game class from the same board without it,
+// exactly like ##dup/##aug — user ruling 2026-07-17. Works on presence alone,
+// so tail profiles carry it too.
+
+/** Sorted gated units present on the board, pipe-joined; '' = none. */
+function gatedSigOf(units: ReadonlySet<string>, gated: ReadonlySet<string>): string {
+  return [...units].filter((u) => gated.has(u)).sort().join('|');
+}
+
 export interface CompRowInput {
   compId: number;
   setNumber: number;
@@ -77,6 +93,13 @@ export interface CompRowInput {
    *  merge stage). All boards in a comp share the same emblems (part of the
    *  cluster signature), so this is comp-wide. Defaults to none. */
   emblems?: string[];
+  /** Average final board level across this comp's ranked boards (the intent
+   *  signal for the merge-level LEVEL_CONFLICT_GAP guard). Omit/0 = unknown. */
+  avgLevel?: number;
+  /** Active-trait frame of the exact board (trait → activation index, computed
+   *  by the merge stage from static data). Omit/empty = unknown — the trait
+   *  term stays neutral. */
+  traitFrame?: Map<string, number>;
 }
 
 // core_units is a MULTISET: the duplicate-copy augment lists a unit more than
@@ -116,7 +139,8 @@ export function buildCompProfile(input: CompRowInput): CompProfile {
     ? new Set(rawRows.map((r) => r.boardId)).size
     : statTotal;
 
-  const classified = classifyCarries(rawRows, totalBoards);
+  const setDamageItems = damageItems(setNumber);
+  const classified = classifyCarries(rawRows, totalBoards, setDamageItems);
   const rates = new Map(classified.map((c) => [c.characterId, c]));
 
   let carries = new Set(bucketCarryIds(classified));
@@ -135,6 +159,13 @@ export function buildCompProfile(input: CompRowInput): CompProfile {
       .slice(0, FALLBACK_MAX);
     carries = new Set(fallback.map((c) => c.characterId));
   }
+
+  // Damage carries: the subset of carries with damage-flavored itemization —
+  // what the merge's carry agreement actually compares (a Sunfire'd Leona or a
+  // Warmog'd Nunu is an itemized unit but not what the line builds around).
+  const damageCarries = new Set(
+    [...carries].filter((id) => (rates.get(id)?.damageItemRate ?? 0) >= DAMAGE_CARRY_MIN_RATE),
+  );
 
   // Carry-grade 3★: fielded at 3★ AND itemized. `carries` covers the fallback
   // path; the explicit rate check additionally admits a reliably top-itemized
@@ -165,13 +196,18 @@ export function buildCompProfile(input: CompRowInput): CompProfile {
   }
 
   // Hero augment: only champs that are BOTH 3-star in this comp's exact
-  // signature AND eligible (HERO_AUGMENT_CHAMPIONS) can be running one —
-  // being 3-star is comp-wide, so that half of the gate is a set intersection
-  // here; classifyHeroAugments checks the per-board itemization half.
-  const heroAugmentEligible = new Set(
-    threeStars.filter((id) => HERO_AUGMENT_CHAMPIONS.has(id)),
+  // signature AND eligible for the comp's SET (set-config) can be running one
+  // — being 3-star is comp-wide, so that half of the gate is a set
+  // intersection here; classifyHeroAugments checks the per-board itemization
+  // half.
+  const heroChamps = heroAugmentChampions(setNumber);
+  const heroAugmentEligible = new Set(threeStars.filter((id) => heroChamps.has(id)));
+  const heroAugments = classifyHeroAugments(
+    rawRows,
+    totalBoards,
+    heroAugmentEligible,
+    setDamageItems,
   );
-  const heroAugments = classifyHeroAugments(rawRows, totalBoards, heroAugmentEligible);
   const heroAugmentSig = heroAugments.find((h) => h.isHeroAugment)?.characterId ?? '';
 
   return {
@@ -180,11 +216,17 @@ export function buildCompProfile(input: CompRowInput): CompProfile {
     units,
     unitWeights,
     carries,
+    damageCarries,
     carryGrade3,
     copySig,
     heroAugmentSig,
+    // Continuous rates behind the sig — the merge guard's three-zone input.
+    heroAugmentRates: new Map(heroAugments.map((h) => [h.characterId, h.damageItemRate])),
     emblemSig: [...new Set(emblems ?? [])].sort().join('|'),
+    gatedSig: gatedSigOf(units, augmentGatedUnits(setNumber)),
     boardCount: statTotal > 0 ? statTotal : totalBoards,
+    avgLevel: input.avgLevel ?? 0,
+    traitFrame: input.traitFrame ?? new Map(),
   };
 }
 
@@ -203,6 +245,10 @@ export interface TailRowInput {
    *  guard must apply to the tail too, else emblem boards leak into the plain
    *  line. Defaults to none. */
   emblems?: string[];
+  /** Average final board level (see CompRowInput.avgLevel). Omit/0 = unknown. */
+  avgLevel?: number;
+  /** Active-trait frame (see CompRowInput.traitFrame). */
+  traitFrame?: Map<string, number>;
 }
 
 /**
@@ -223,10 +269,15 @@ export function buildTailProfile(input: TailRowInput): CompProfile {
     units,
     unitWeights: new Map(),
     carries: new Set(),
+    damageCarries: new Set(),
     carryGrade3: new Set(input.threeStars),
     copySig,
     heroAugmentSig: '',
+    heroAugmentRates: new Map(),
     emblemSig: [...new Set(input.emblems ?? [])].sort().join('|'),
+    gatedSig: gatedSigOf(units, augmentGatedUnits(input.setNumber)),
     boardCount: input.statTotal,
+    avgLevel: input.avgLevel ?? 0,
+    traitFrame: input.traitFrame ?? new Map(),
   };
 }

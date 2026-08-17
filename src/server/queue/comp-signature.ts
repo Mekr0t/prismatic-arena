@@ -1,11 +1,12 @@
 // comp-signature.ts — exact-board identity (rebuild).
 //
 // A comp IS its exact unit multiset, with star collapsed to two buckets: 3-star
-// is its own identity, 1-star and 2-star are the same. No archetype, no carry
-// detection, no traits, no families, no shells, no fallback, no merging — two
-// boards cluster together iff they fielded the identical units at the identical
-// star bucket. This is deliberately the simplest rule that can exist; the only
-// knob is the minimum board size (which drops surrenders / sell-outs / DCs).
+// is its own identity (for reroll-cost units only — see SIG_STAR_MAX_COST),
+// 1-star and 2-star are the same. No archetype, no carry detection, no traits,
+// no families, no shells, no fallback, no merging — two boards cluster together
+// iff they fielded the identical units at the identical star bucket. This is
+// deliberately the simplest rule that can exist; the knobs are the minimum
+// board size (drops surrenders / sell-outs / DCs) and the 3★ cost gate.
 //
 // `threeStars` is surfaced ONLY for display labelling: it's the hit the player
 // explicitly went for, which the bucket split already treats as identity. It is
@@ -19,6 +20,13 @@ const num = (v: string | undefined, fallback: number): number => {
 /** A board with fewer real (cost 1–5) units than this is dropped from
  *  clustering: it means a surrender / sell-out / disconnect, not a comp. */
 export const MIN_BOARD_UNITS = num(process.env.SIG_MIN_BOARD_UNITS, 6);
+
+/** 3★ splits identity only for units at or below this cost. A 3★ 4/5-cost is
+ *  never the plan — it's a lottery hit or a set mechanic (the Arbiter "print"
+ *  hands out a free unit, 7-piece Meeple duplicates one) landing on a fast-8/9
+ *  board. It changes the board's placement, not what the comp IS, so it must
+ *  not cluster that board away from the same comp without the hit. */
+export const SIG_STAR_MAX_COST = num(process.env.SIG_STAR_MAX_COST, 3);
 
 export interface SigUnit {
   characterId: string;
@@ -52,9 +60,9 @@ export function emblemsFromSignature(signature: string | null | undefined): stri
 }
 
 // 1★ and 2★ collapse to "lo"; 3★ is its own bucket — the only star distinction
-// that splits identity.
-function starBucket(star: number): string {
-  return star >= 3 ? '3' : 'lo';
+// that splits identity, and only for reroll-cost units (see SIG_STAR_MAX_COST).
+function starBucket(u: SigUnit): string {
+  return u.star >= 3 && u.cost <= SIG_STAR_MAX_COST ? '3' : 'lo';
 }
 
 /**
@@ -68,7 +76,7 @@ export function buildIdentity(units: SigUnit[], emblems: string[] = []): CompIde
   const real = units.filter((u) => u.cost >= 1 && u.cost <= 5);
   if (real.length < MIN_BOARD_UNITS) return null;
 
-  const unitTokens = real.map((u) => `${u.characterId}:${starBucket(u.star)}`).sort();
+  const unitTokens = real.map((u) => `${u.characterId}:${starBucket(u)}`).sort();
   // Worn emblems are appended as `emb:<itemId>` tokens (sorted, deduped) so a
   // board that runs a trait emblem clusters apart from the same units without
   // it. Character ids never start with "emb:", so the two token kinds are
@@ -78,8 +86,12 @@ export function buildIdentity(units: SigUnit[], emblems: string[] = []): CompIde
   const signature = [...unitTokens, ...embTokens].join('|');
 
   const coreUnits = real.map((u) => u.characterId).sort(compareIds);
+  // Same cost gate as the signature: a lottery/print/duplicate 3★ 4/5-cost is
+  // not a "hit" — keeping it out here keeps comps.carries deterministic (all
+  // boards of one signature agree on the 3★ set) and keeps it out of hit
+  // states, labels, and the grade3 merge guard.
   const threeStars = real
-    .filter((u) => u.star >= 3)
+    .filter((u) => u.star >= 3 && u.cost <= SIG_STAR_MAX_COST)
     .map((u) => u.characterId)
     .sort(compareIds);
 

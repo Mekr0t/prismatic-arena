@@ -14,10 +14,12 @@
 //                      on a single board (default 3).
 //
 // Also classifies "hero augments" — an augment that turns an otherwise-support
-// tank into a second itemized carry. Set-scoped (TFT17): only the champions in
-// HERO_AUGMENT_CHAMPIONS can take one, and only counts as active on a board
-// where the champ is 3-star AND holds >= HERO_AUGMENT_MIN_DAMAGE_ITEMS of the
-// DAMAGE_ITEMS set. See classifyHeroAugments.
+// tank into a second itemized carry. The eligible-champion list and the
+// damage-item pool are PER-SET curated knowledge (set-config.ts); callers
+// resolve them for the comp's set and pass them in, so this module stays pure
+// classification with no set awareness. A champ only counts as active on a
+// board where it is 3-star AND holds >= HERO_AUGMENT_MIN_DAMAGE_ITEMS of the
+// set's damage items. See classifyHeroAugments.
 
 import { COMPONENT_ITEMS } from '@/server/item-filters';
 
@@ -26,6 +28,10 @@ const _num = (v: string | undefined, d: number) => { const n = Number(v); return
 const FULLY_ITEMIZED  = _num(process.env.CARRY_FULLY_ITEMIZED, 3);
 const CARRY_FULL_RATE = _num(process.env.CARRY_FULL_RATE,      0.5);
 const TOP_ITEM_SLOTS  = _num(process.env.CARRY_TOP_ITEM_SLOTS, 2);
+// Completed items from the set's damage pool needed on a single board for that
+// board to count toward a unit's damageItemRate (damage-flavored itemization —
+// an itemized TANK holds 0-1 of these, a damage carry 2-3).
+const CARRY_DAMAGE_MIN_ITEMS = _num(process.env.CARRY_DAMAGE_MIN_ITEMS, 2);
 
 // Completed-item count (from DAMAGE_ITEMS) needed on a single board for a hero
 // augment to count as "active" for that board.
@@ -38,55 +44,12 @@ const HERO_AUGMENT_RATE = _num(process.env.HERO_AUGMENT_RATE, CARRY_FULL_RATE);
 // Component items — excluded when counting "completed" items — are the shared
 // COMPONENT_ITEMS set from item-filters.ts (imported above).
 
-// ── Hero augments (set 17) ─────────────────────────────────────────────────────
+// ── Per-set knowledge lives in set-config.ts ──────────────────────────────────
 //
-// Champions that can take a hero augment (turns a support/tank into a second
-// itemized carry). Character IDs verified against the current set's `units`
-// table, not guessed from display names — several damage items below are
-// thematic set-17 renames of the base LoL item (e.g. Void Staff → Statikk
-// Shiv, Kraken's Fury → Runaan's Hurricane), so their apiNames don't match the
-// display name pattern.
-
-export const HERO_AUGMENT_CHAMPIONS = new Set<string>([
-  'TFT17_Poppy',
-  'TFT17_Jax',
-  'TFT17_Aatrox',
-  'TFT17_Gragas',
-  'TFT17_Mordekaiser',
-  'TFT17_Nasus',
-  'TFT17_Leona',
-  'TFT17_IvernMinion', // Meepsie
-]);
-
-// "Damage items" — completed items that count toward a hero-augment carry's
-// itemization threshold. IDs are this set's apiNames, resolved from the DB
-// (`items` table), not derived from display names.
-export const DAMAGE_ITEMS = new Set<string>([
-  'TFT_Item_AdaptiveHelm',
-  'TFT_Item_ArchangelsStaff',
-  'TFT_Item_Bloodthirster',
-  'TFT_Item_BlueBuff',
-  'TFT_Item_Deathblade',
-  'TFT_Item_GuardianAngel',      // Edge of Night
-  'TFT_Item_MadredsBloodrazor',  // Giant Slayer
-  'TFT_Item_GuinsoosRageblade',
-  'TFT_Item_UnstableConcoction', // Hand Of Justice
-  'TFT_Item_HextechGunblade',
-  'TFT_Item_InfinityEdge',
-  'TFT_Item_RunaansHurricane',   // Kraken's Fury
-  'TFT_Item_JeweledGauntlet',
-  'TFT_Item_LastWhisper',
-  'TFT_Item_Morellonomicon',
-  'TFT_Item_Leviathan',          // Nashor's Tooth
-  'TFT_Item_Quicksilver',
-  'TFT_Item_RabadonsDeathcap',
-  'TFT_Item_RapidFireCannon',    // Red Buff
-  'TFT_Item_SpearOfShojin',
-  'TFT_Item_SteraksGage',
-  'TFT_Item_PowerGauntlet',      // Striker's Flail
-  'TFT_Item_TitansResolve',
-  'TFT_Item_StatikkShiv',        // Void Staff
-]);
+// The hero-augment champion list and the damage-item pool are SET-SPECIFIC
+// curated knowledge (item apiNames are cross-set but their roles change per
+// set). Callers resolve them from `set-config.ts` for the comp's set and pass
+// them in — this module stays pure classification with no set awareness.
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -119,6 +82,12 @@ export interface BucketCarry {
    *  as the binary carry gate. */
   isBucketCarry: boolean;
 
+  /** Share of boards where this unit's best copy holds >= CARRY_DAMAGE_MIN_ITEMS
+   *  completed DAMAGE_ITEMS (0..1). Separates damage carries from itemized
+   *  tanks/supports — the merge stage's carry agreement compares damage carries
+   *  so a Sunfire'd Leona can't split two boards that agree on the real carry. */
+  damageItemRate: number;
+
   /** Most common completed-item set among the boards where the unit is fully
    *  itemized — the "signature build".  Empty when never fully itemized.
    *  Items are in display order (the order they first appeared in the modal set). */
@@ -137,10 +106,17 @@ function completed(items: string[]): string[] {
  * @param rows          Flat list of RawUnitItem records (one per board × unit × copy).
  * @param totalBoards   Total boards in the comp's bucket (denominator for rates).
  *                      Should equal the comp's `n` from comp_stats.
+ * @param damageItems   The comp's SET's damage-item pool (set-config.damageItems)
+ *                      — drives `damageItemRate`. Pass an empty set to disable
+ *                      damage classification (unconfigured sets).
  * @returns  Carry profiles, strongest first (fullyItemizedRate desc, then topItemizedRate).
  *           Only units that appear on at least one board are included.
  */
-export function classifyCarries(rows: RawUnitItem[], totalBoards: number): BucketCarry[] {
+export function classifyCarries(
+  rows: RawUnitItem[],
+  totalBoards: number,
+  damageItems: ReadonlySet<string>,
+): BucketCarry[] {
   if (totalBoards === 0 || rows.length === 0) return [];
 
   // ── Step 1: per board, per unit — keep only the most-itemized copy ──────────
@@ -164,6 +140,7 @@ export function classifyCarries(rows: RawUnitItem[], totalBoards: number): Bucke
   interface UnitAcc {
     fullyItemizedBoards: number;
     topItemizedBoards: number;
+    damageBoards: number;
     itemSets: Map<string, { count: number; items: string[] }>;
   }
 
@@ -171,7 +148,7 @@ export function classifyCarries(rows: RawUnitItem[], totalBoards: number): Bucke
   const unitAcc = (id: string): UnitAcc => {
     let a = byUnit.get(id);
     if (!a) {
-      a = { fullyItemizedBoards: 0, topItemizedBoards: 0, itemSets: new Map() };
+      a = { fullyItemizedBoards: 0, topItemizedBoards: 0, damageBoards: 0, itemSets: new Map() };
       byUnit.set(id, a);
     }
     return a;
@@ -198,6 +175,11 @@ export function classifyCarries(rows: RawUnitItem[], totalBoards: number): Bucke
       // itemized" on an itemless board is meaningless noise, and the merge
       // stage uses this rate as a fallback carry signal.
       if (rank < TOP_ITEM_SLOTS && done.length > 0) a.topItemizedBoards += 1;
+
+      // Damage-flavored itemization (see damageItemRate).
+      let damageCount = 0;
+      for (const id of done) if (damageItems.has(id)) damageCount += 1;
+      if (damageCount >= CARRY_DAMAGE_MIN_ITEMS) a.damageBoards += 1;
     }
   }
 
@@ -208,13 +190,21 @@ export function classifyCarries(rows: RawUnitItem[], totalBoards: number): Bucke
   for (const [characterId, a] of byUnit) {
     const fullyItemizedRate = a.fullyItemizedBoards / totalBoards;
     const topItemizedRate   = a.topItemizedBoards   / totalBoards;
+    const damageItemRate    = a.damageBoards        / totalBoards;
     const isBucketCarry     = fullyItemizedRate >= CARRY_FULL_RATE;
 
     let modalItems: string[] = [];
     let best = 0;
     for (const s of a.itemSets.values()) if (s.count > best) { best = s.count; modalItems = s.items; }
 
-    carries.push({ characterId, fullyItemizedRate, topItemizedRate, isBucketCarry, modalItems });
+    carries.push({
+      characterId,
+      fullyItemizedRate,
+      topItemizedRate,
+      isBucketCarry,
+      damageItemRate,
+      modalItems,
+    });
   }
 
   return carries.sort(
@@ -252,14 +242,16 @@ export interface HeroAugmentCarry {
  *
  * @param rows        Same raw rows classifyCarries takes.
  * @param totalBoards Total boards in the comp (denominator for rates).
- * @param eligibleIds Champs to check — typically HERO_AUGMENT_CHAMPIONS ∩
- *                    (this comp's 3-star units).
+ * @param eligibleIds Champs to check — typically the set's hero-augment champs
+ *                    (set-config.heroAugmentChampions) ∩ this comp's 3-stars.
+ * @param damageItems The comp's SET's damage-item pool (set-config.damageItems).
  * @returns One entry per eligibleId, strongest damageItemRate first.
  */
 export function classifyHeroAugments(
   rows: RawUnitItem[],
   totalBoards: number,
   eligibleIds: ReadonlySet<string>,
+  damageItems: ReadonlySet<string>,
 ): HeroAugmentCarry[] {
   if (totalBoards === 0 || rows.length === 0 || eligibleIds.size === 0) return [];
 
@@ -277,7 +269,7 @@ export function classifyHeroAugments(
   const activeBoards = new Map<string, number>();
   for (const byUnit of bestPerBoard.values()) {
     for (const [characterId, done] of byUnit) {
-      const damageCount = done.filter((id) => DAMAGE_ITEMS.has(id)).length;
+      const damageCount = done.filter((id) => damageItems.has(id)).length;
       if (damageCount >= HERO_AUGMENT_MIN_DAMAGE_ITEMS) {
         activeBoards.set(characterId, (activeBoards.get(characterId) ?? 0) + 1);
       }

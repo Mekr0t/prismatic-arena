@@ -39,6 +39,33 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// Focus the fetch budget on the CURRENT patch. Once a patch flips, old-patch
+// games are history — they can't change "what's good right now", so the ids
+// pull skips them (an old match that does slip through still lands on its own
+// patch_id harmlessly). The boundary is DERIVED FROM DATA, never hand-set:
+// the first observed current-patch match, minus a safety margin covering the
+// deploy-to-first-observation gap (the filter otherwise permanently hides
+// current-patch games played before we first saw one). Bootstrap (no
+// current-patch match yet) → no filter; the boundary self-advances when
+// resolvePatchId flips is_current on the next patch's first ingested match.
+// Set CRAWL_CURRENT_PATCH_ONLY=false to crawl full recent histories.
+const CURRENT_PATCH_ONLY = process.env.CRAWL_CURRENT_PATCH_ONLY !== 'false';
+
+/** Epoch seconds of the current-patch crawl boundary, or null (no filter). */
+async function currentPatchStart(): Promise<number | null> {
+  if (!CURRENT_PATCH_ONLY) return null;
+  const rows = await query<{ start: string | null }>(
+    `SELECT extract(epoch FROM MIN(m.game_datetime))::bigint::text AS start
+       FROM matches m
+       JOIN patches p ON p.id = m.patch_id
+      WHERE p.is_current = true`,
+  );
+  const start = rows[0]?.start ? Number(rows[0].start) : null;
+  if (start === null || !Number.isFinite(start)) return null;
+  const marginHours = envInt('CRAWL_SINCE_MARGIN_HOURS', 12);
+  return start - marginHours * 3600;
+}
+
 export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Promise<void> {
   const platform = (data.platform ?? CRAWL.platform) as Platform;
   const route = routeForPlatform(platform);
@@ -69,6 +96,14 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       }
     }
 
+    // Current-patch-only boundary for every ids pull this pass (see above).
+    const sinceEpoch = await currentPatchStart();
+    if (sinceEpoch !== null) {
+      console.log(
+        `[ladder-crawl] current-patch-only: fetching games since ${new Date(sinceEpoch * 1000).toISOString()}`,
+      );
+    }
+
     // 2) DRAIN — never-crawled first (NULLS FIRST), then anything past the
     //    re-crawl window. This works down the discovered backlog instead of
     //    re-seeding the ladder top. Index: accounts (last_crawled_at NULLS FIRST).
@@ -92,7 +127,12 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       const count = Math.min(CRAWL.matchIdsPerPuuid, fetchBudget);
       let matchIds: string[];
       try {
-        matchIds = await riot.match.idsByPuuid(route, puuid, { count }, Priority.BATCH);
+        matchIds = await riot.match.idsByPuuid(
+          route,
+          puuid,
+          { count, startTime: sinceEpoch ?? undefined },
+          Priority.BATCH,
+        );
       } catch (err) {
         // One bad seed (malformed puuid, deleted account, etc.) must not abort
         // the whole drain pass — that leaves every seed after it un-crawled too,

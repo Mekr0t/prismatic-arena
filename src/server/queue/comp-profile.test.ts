@@ -146,7 +146,7 @@ test('classifyCarries: zero completed items never counts as top-itemized', () =>
     { A: [], B: [], C: [] },
     { A: [], B: [], C: [] },
   ]);
-  const out = classifyCarries(raw, 2);
+  const out = classifyCarries(raw, 2, new Set());
   assert.ok(out.length > 0);
   for (const c of out) {
     assert.equal(c.topItemizedRate, 0);

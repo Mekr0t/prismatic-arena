@@ -1,7 +1,7 @@
 import { query } from '@/lib/db';
 import { iconUrl } from '@/lib/icon-url';
 import type { Breakpoint } from '@/lib/planner/core';
-import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK } from './item-filters';
+import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
 import { currentSet } from './static-data';
 
 export interface LibUnit {
@@ -154,7 +154,7 @@ export async function getLibraryData(): Promise<LibraryData> {
     if (COMPONENT_IDS.has(id)) kind = 'component';
     else if (/Emblem/i.test(id) || /Emblem/i.test(r.name)) kind = 'emblem';
     else if (Array.isArray(r.composition) && r.composition.length === 2) kind = 'craftable';
-    else if (/_Item_Artifact_/i.test(id)) kind = 'artifact';
+    else if (isArtifactItem(id)) kind = 'artifact';
     else kind = 'other';
 
     const key = r.name.toLowerCase();

@@ -20,14 +20,25 @@ import 'dotenv/config';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pool } from '@/lib/db';
-import { loadCompProfiles, loadTailProfiles } from '@/server/queue/stages/merge';
+import {
+  loadCompProfiles,
+  loadTailProfiles,
+  loadMergeStatic,
+} from '@/server/queue/stages/merge';
 import {
   mergeComps,
-  assignTail,
+  makeTailAssigner,
   debugCompare,
   type CompProfile,
   type CompareResult,
 } from '@/server/queue/comp-merge';
+
+// Mirrors the stage's MERGE_SEED_MIN_TOTAL split (mid-tier joins the merge,
+// singletons are assign-only) so the eval replays the exact production path.
+const SEED_MIN_TOTAL = (() => {
+  const n = Number(process.env.MERGE_SEED_MIN_TOTAL);
+  return Number.isFinite(n) ? n : 2;
+})();
 
 interface EvalPair {
   a: number;
@@ -55,7 +66,8 @@ function strArg(args: string[], flag: string): string | undefined {
 function fmtCompare(r: CompareResult): string {
   const parts =
     `score ${r.score.toFixed(3)}  cont ${r.containment.toFixed(2)}  ` +
-    `jac ${r.jaccard.toFixed(2)}  carry ${r.carryOverlap.toFixed(2)}`;
+    `jac ${r.jaccard.toFixed(2)}  carry ${r.carryOverlap.toFixed(2)}  ` +
+    `trait ${r.traitSim >= 0 ? r.traitSim.toFixed(2) : '—'}`;
   return r.fails.length === 0 ? `${parts}  → MERGE` : `${parts}  → fails: ${r.fails.join(', ')}`;
 }
 
@@ -71,7 +83,12 @@ function fmtProfile(p: CompProfile): string {
     `  comp ${p.compId} (set ${p.setNumber}, ${p.boardCount} boards)`,
     `    units:   ${units}`,
     `    carries: ${[...p.carries].sort().join(', ') || '—'}`,
+    `    dmg:     ${[...p.damageCarries].sort().join(', ') || '—'}`,
     `    grade3★: ${[...p.carryGrade3].sort().join(', ') || '—'}`,
+    `    frame:   ${[...p.traitFrame.entries()]
+      .sort((x, y) => y[1] - x[1])
+      .map(([t, v]) => `${t.replace(/^TFT\d+_/, '')}:${v.toFixed(1)}`)
+      .join(' ') || '—'}`,
   ];
   if (p.copySig) lines.push(`    copySig: ${p.copySig}`);
   if (p.heroAugmentSig) lines.push(`    heroAug: ${p.heroAugmentSig}`);
@@ -95,7 +112,12 @@ function why(
   }
   const la = labelById.get(aId);
   const lb = labelById.get(bId);
-  console.log(la === lb ? `SAME archetype: ${la}` : `DIFFERENT archetypes:\n  a → ${la}\n  b → ${lb}`);
+  const same = la !== undefined && la === lb; // undefined = unlabeled ≠ merged
+  console.log(
+    same
+      ? `SAME archetype: ${la}`
+      : `DIFFERENT archetypes:\n  a → ${la ?? '(unlabeled)'}\n  b → ${lb ?? '(unlabeled)'}`,
+  );
   console.log('\nProfiles:');
   console.log(fmtProfile(a));
   console.log(fmtProfile(b));
@@ -104,7 +126,7 @@ function why(
   console.log('\nPairwise verdicts:');
   console.log(`  a vs b: ${fmtCompare(debugCompare(a, b))}`);
   console.log(`  b vs a: ${fmtCompare(debugCompare(b, a))}`);
-  if (la === lb) {
+  if (same) {
     console.log(
       '\nNote: they share an archetype in the full run; pairwise verdicts above may still' +
       '\nsay split — membership can come via intermediate variants widening the archetype.',
@@ -120,7 +142,7 @@ interface TailStats {
 }
 
 function summary(
-  floored: CompProfile[],
+  merged: { floored: number; mid: number },
   tail: TailStats,
   byId: Map<number, CompProfile>,
   labelById: Map<number, string>,
@@ -138,9 +160,11 @@ function summary(
   const singletons = sorted.filter(([, r]) => r.members === 1).length;
   const disambiguated = sorted.filter(([l]) => l.includes('##k:')).length;
 
-  console.log(`${floored.length} floored comps → ${rows.size} archetypes`);
   console.log(
-    `tail (sub-floor): ${tail.assigned}/${tail.total} comps assigned, ` +
+    `${merged.floored} floored + ${merged.mid} mid-tier comps → ${rows.size} archetypes`,
+  );
+  console.log(
+    `singleton tail: ${tail.assigned}/${tail.total} comps assigned, ` +
     `${tail.assignedBoards}/${tail.totalBoards} boards recovered`,
   );
   console.log(`singleton archetypes: ${singletons}   disambiguated labels (##k:): ${disambiguated}`);
@@ -181,7 +205,9 @@ function evalPairs(
     }
     const la = labelById.get(p.a);
     const lb = labelById.get(p.b);
-    const merged = la === lb;
+    // Two UNLABELED comps are separate singleton rows, not a merge — undefined
+    // labels must never compare equal (tail-tail pairs would silently "pass").
+    const merged = la !== undefined && la === lb;
     const ok = (p.expect === 'merge') === merged;
     if (!ok && !p.known) failures++;
     const verdict = ok ? 'PASS ' : p.known ? 'KNOWN' : 'FAIL ';
@@ -213,30 +239,35 @@ async function main(): Promise<void> {
     strArg(args, '--pairs') ?? path.join(process.cwd(), 'scripts', 'merge-eval-pairs.json');
 
   const client = await pool.connect();
-  let profiles: CompProfile[];
+  let floored: CompProfile[];
+  let mid: CompProfile[];
   let tail: CompProfile[];
   try {
-    profiles = await loadCompProfiles(client, setNumber);
-    tail = await loadTailProfiles(client, setNumber);
+    const shared = await loadMergeStatic(client, setNumber);
+    floored = await loadCompProfiles(client, setNumber, shared);
+    mid = await loadTailProfiles(client, setNumber, { minTotal: SEED_MIN_TOTAL }, shared);
+    tail = await loadTailProfiles(client, setNumber, { maxTotal: SEED_MIN_TOTAL }, shared);
   } finally {
     client.release();
   }
 
+  const profiles = [...floored, ...mid];
   if (profiles.length === 0) {
     console.log('No tier-relevant comps found (has cluster + rollup run? is the floor too high?).');
     return;
   }
 
-  const result = mergeComps(profiles);
+  const result = await mergeComps(profiles);
 
-  // Assign-only labeling of the sub-floor tail — mirrors runMerge.
+  // Assign-only labeling of the singleton tail — mirrors runMerge.
+  const assign = makeTailAssigner(result.archetypeProfiles);
   const labelById = new Map(result.assignments);
   let assigned = 0;
   let assignedBoards = 0;
   let tailBoards = 0;
   for (const t of tail) {
     tailBoards += t.boardCount;
-    const label = assignTail(t, result.archetypeProfiles);
+    const label = assign(t);
     if (label !== null) {
       labelById.set(t.compId, label);
       assigned++;
@@ -253,7 +284,7 @@ async function main(): Promise<void> {
   }
 
   summary(
-    profiles,
+    { floored: floored.length, mid: mid.length },
     { total: tail.length, totalBoards: tailBoards, assigned, assignedBoards },
     byId,
     labelById,

@@ -46,6 +46,11 @@ function CompRow({ row, detailQuery }: { row: CompRowVM; detailQuery: string }) 
             Augment: 2× {row.identity.dupUnits.join(', ')}
           </span>
         )}
+        {row.identity.gatedUnits.length > 0 && (
+          <span className="rr-tag tag-fast" title="Augment-gated unit — only enters a game through its augment">
+            Invader: {row.identity.gatedUnits.join(', ')}
+          </span>
+        )}
         {row.identity.heroAugmentUnit && (
           <span className="rr-tag tag-reroll" title="Hero-augment build">
             {row.identity.heroAugmentUnit} Hero Aug

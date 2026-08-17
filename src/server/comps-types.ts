@@ -64,6 +64,7 @@ export interface CompIdentityVM {
   keyTraits: KeyTraitChipVM[]; // most-invested first (backfilled from the example team)
   dupUnits: string[]; // duplicate-copy augment units (label ##dup:), resolved names
   heroAugmentUnit: string | null; // hero-augment carry name (label ##aug:)
+  gatedUnits: string[]; // augment-gated units (label ##gate:, e.g. Invader Zed), resolved names
   emblems: { name: string; iconUrl: string | null }[]; // worn trait emblems (label ##emb:)
 }
 
@@ -150,6 +151,10 @@ export interface DetailUnitVM {
   winRate: number;
   perStar: DetailStarLineVM[]; // star tiers with a usable sample, star desc
   items: ExampleItemVM[]; // modal completed set (label carries only)
+  /** Modal copies-per-board from the pooled team (>1 = duplicate-copy line). */
+  modalCopies?: number;
+  /** One star tier per copy, descending — the strip renders one tile each. */
+  copyStars?: number[];
 }
 
 export interface DetailBuildSetVM {

@@ -1,7 +1,7 @@
 import { query } from '@/lib/db';
 import { iconUrl } from '@/lib/icon-url';
 import type { PlannerData, PlannerUnit, PlannerTrait, PlannerItem, Breakpoint } from '@/lib/planner/core';
-import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK } from './item-filters';
+import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
 import { currentSet } from './static-data';
 
 const TEAMPLANNER_URL =
@@ -89,7 +89,7 @@ export async function getPlannerData(): Promise<PlannerData> {
       trait = traitIdByName.get(r.name.replace(/\s*Emblem\s*$/i, '').trim().toLowerCase());
     } else if (Array.isArray(r.composition) && r.composition.length === 2) {
       kind = 'craftable';
-    } else if (/_Item_Artifact_/i.test(id)) {
+    } else if (isArtifactItem(id)) {
       kind = 'artifact';
     } else {
       kind = 'other';

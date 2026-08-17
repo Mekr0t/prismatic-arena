@@ -68,6 +68,19 @@ function UnitTile({ unit, showFreq }: { unit: DetailUnitVM; showFreq: boolean })
   );
 }
 
+/** One tile per modal copy — a duplicate-copy line renders both copies (the
+ *  spare keeps its own star pip but no items or freq badge). */
+function stripTiles(u: DetailUnitVM, showFreq: boolean) {
+  const stars = u.copyStars && u.copyStars.length > 0 ? u.copyStars : [u.modalStar];
+  return stars.map((star, i) => (
+    <UnitTile
+      key={`${u.characterId}:${i}`}
+      unit={i === 0 ? u : { ...u, modalStar: star, items: [] }}
+      showFreq={showFreq && i === 0}
+    />
+  ));
+}
+
 function TraitChip({ trait }: { trait: KeyTraitChipVM }) {
   const { showTooltip, hideTooltip, openModal } = useGameData();
   return (
@@ -298,6 +311,9 @@ export function CompDetail({
             {id.dupUnits.length > 0 && (
               <span className="rr-tag tag-fast">Augment: 2× {id.dupUnits.join(', ')}</span>
             )}
+            {id.gatedUnits.length > 0 && (
+              <span className="rr-tag tag-fast">Invader: {id.gatedUnits.join(', ')}</span>
+            )}
             {id.heroAugmentUnit && (
               <span className="rr-tag tag-reroll">{id.heroAugmentUnit} Hero Aug</span>
             )}
@@ -364,18 +380,14 @@ export function CompDetail({
         <div className="cd-strip">
           <h2>Core</h2>
           <div className="cd-strip-units">
-            {detail.core.map((u) => (
-              <UnitTile key={u.characterId} unit={u} showFreq={false} />
-            ))}
+            {detail.core.flatMap((u) => stripTiles(u, false))}
           </div>
         </div>
         {detail.flex.length > 0 && (
           <div className="cd-strip">
             <h2>Flex</h2>
             <div className="cd-strip-units">
-              {detail.flex.map((u) => (
-                <UnitTile key={u.characterId} unit={u} showFreq />
-              ))}
+              {detail.flex.flatMap((u) => stripTiles(u, true))}
             </div>
           </div>
         )}

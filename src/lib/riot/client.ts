@@ -260,17 +260,20 @@ export const riot = {
   },
 
   match: {
-    /** Recent match IDs for a puuid. Regional host. */
+    /** Recent match IDs for a puuid. Regional host. `startTime` (epoch
+     *  seconds) excludes games started before it — the crawler uses it to
+     *  spend its budget on current-patch games only. */
     async idsByPuuid(
       route: RegionalRoute,
       puuid: string,
-      opts: { start?: number; count?: number } = {},
+      opts: { start?: number; count?: number; startTime?: number } = {},
       priority = Priority.USER,
     ) {
-      const { start = 0, count = 20 } = opts;
+      const { start = 0, count = 20, startTime } = opts;
+      const since = startTime ? `&startTime=${Math.floor(startTime)}` : '';
       const data = await request<string[]>({
         host: regionalHost(route),
-        path: `/tft/match/v1/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}`,
+        path: `/tft/match/v1/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}${since}`,
         regionKey: route,
         priority,
         cacheTtl: CACHE_TTL.matchIds,

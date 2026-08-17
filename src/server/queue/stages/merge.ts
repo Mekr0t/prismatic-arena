@@ -7,16 +7,15 @@
 // an archetype. The archetype label is written back to comps.meta_comp.
 // Idempotent — re-running overwrites.
 //
-// SCOPE — tier-relevant comps only. Merge used to label EVERY exact-board comp
-// (tens of thousands), but the tier list only shows comps whose per-bucket
-// sample reaches TIER_MIN_SAMPLE. Grouping the sub-threshold long tail is pure
-// waste: those comps never render, and diluting the archetype profiles with
-// thousands of n=1/2 boards makes the grouping of the comps that DO matter worse,
-// not better. So the input is filtered to comps that are tiered in at least one
-// bucket (MAX(cs.n) >= MERGE_MIN_SAMPLE). This is what keeps the JS clustering
-// loop and the comps UPDATE sub-second instead of multi-minute — which is what
-// stops merge from starving the shared event loop and holding a long transaction
-// that deadlocks with cluster.
+// SCOPE — universal, in three evidence tiers. Floored comps (MAX(cs.n) >=
+// MERGE_MIN_SAMPLE in some bucket) get full itemization profiles (the
+// participant_units fan-out stays bounded by the floor — that fan-out is what
+// made the first universal-merge attempt multi-minute). Mid-tier comps
+// (total >= MERGE_SEED_MIN_TOTAL) join the same merge with presence-only
+// profiles. Singletons get assign-only labeling. The clustering itself stays
+// event-loop-safe at this scale via comp-merge's candidate index + yield
+// points, and the comps UPDATE runs in its own short transaction so merge
+// can't deadlock with cluster.
 //
 // Pipeline position: after cluster (comps exist + comp_ids are stamped) and
 // rollup (comp_stats.n is available as the boardCount weight AND the tier-floor
@@ -26,7 +25,7 @@ import type { PoolClient } from 'pg';
 import { pool } from '@/lib/db';
 import type { JobContext } from '../job-tracking';
 import { buildCompProfile, buildTailProfile } from '../comp-profile';
-import { mergeComps, assignTail, type CompProfile } from '../comp-merge';
+import { mergeComps, makeTailAssigner, type CompProfile } from '../comp-merge';
 import { emblemsFromSignature } from '../comp-signature';
 import type { RawUnitItem } from '../carry-classify';
 
@@ -45,12 +44,22 @@ const _num = (v: string | undefined, d: number) => {
 // decouple (e.g. to pre-label comps that are close to qualifying).
 const MERGE_MIN_SAMPLE = _num(process.env.MERGE_MIN_SAMPLE ?? process.env.TIER_MIN_SAMPLE, 15);
 
-// Sub-floor comps with at least this many total boards get an assign-only
-// labeling attempt against the frozen archetype profiles (comps-table data
-// only — no participant_units fetch, which is what the floor exists to avoid).
-// Missed-hit boards fragment across many exact signatures, so they
-// disproportionately sit below the floor; without this pass every archetype's
-// pooled stats stay survivorship-tilted.
+// UNIVERSAL MERGE — the sub-floor population splits in two:
+//
+// MID-TIER (total boards >= MERGE_SEED_MIN_TOTAL, below the bucket floor):
+// joins the REAL merge with presence-only profiles (comps-table data — units,
+// 3★ set, level; no participant_units fetch). These comps may join floored
+// archetypes (presence-proxied carries, assignTail's old bar) or seed/join
+// micro-archetypes with EACH OTHER — the fix for niche lines fragmented across
+// sub-floor hit-state signatures, which the assign-only tail could never
+// consolidate (a 10-variant / 80-board reroll family used to render as 10
+// separate singleton rows forever).
+//
+// SINGLETONS (below MERGE_SEED_MIN_TOTAL): assign-only against the frozen
+// post-merge profiles, exactly the old tail pass. Missed-hit boards fragment
+// across many exact signatures, so they disproportionately sit down here;
+// without this pass every archetype's pooled stats stay survivorship-tilted.
+const MERGE_SEED_MIN_TOTAL    = _num(process.env.MERGE_SEED_MIN_TOTAL, 2);
 const MERGE_ASSIGN_MIN_SAMPLE = _num(process.env.MERGE_ASSIGN_MIN_SAMPLE, 1);
 
 // Yield to the event loop every N tail comparisons — the merge worker shares
@@ -60,6 +69,127 @@ const ASSIGN_YIELD_EVERY = 500;
 export interface MergeJob {
   /** Scope to one set. Default (undefined) = every set present in comps. */
   setNumber?: number;
+}
+
+/** Average final board level per comp (ranked boards only), set-scoped in one
+ *  grouped pass over mp_comp_idx — feeds the merge-level LEVEL_CONFLICT_GAP
+ *  intent guard for floored AND tail profiles. */
+async function loadAvgLevels(
+  client: PoolClient,
+  setNumber?: number,
+): Promise<Map<number, number>> {
+  const res = await client.query<{ comp_id: number; avg_level: number }>(
+    `SELECT mp.comp_id, AVG(mp.level)::float8 AS avg_level
+       FROM match_participants mp
+       JOIN matches m ON m.match_id = mp.match_id
+      WHERE mp.comp_id IS NOT NULL
+        AND mp.level IS NOT NULL
+        AND m.queue_id = $2
+        AND ($1::int IS NULL OR m.set_number = $1)
+      GROUP BY mp.comp_id`,
+    [setNumber ?? null, RANKED_TFT_QUEUE_ID],
+  );
+  const map = new Map<number, number>();
+  for (const r of res.rows) map.set(r.comp_id, Number(r.avg_level));
+  return map;
+}
+
+/** Static trait data for frame building, keyed by set like loadUnitCosts:
+ *  unit → trait ids, trait → ascending breakpoint minUnits, and worn-emblem
+ *  item → trait id (name convention `TFTn_Item_<X>EmblemItem` → `TFTn_<X>`,
+ *  kept only when that trait actually exists for the set). */
+export interface TraitStatics {
+  unitTraits: Map<string, string[]>; // `${set}:${characterId}` → trait ids
+  breakpoints: Map<string, number[]>; // `${set}:${traitId}` → minUnits asc
+  emblemTrait: Map<string, string>; // `${set}:${itemId}` → traitId
+}
+
+async function loadTraitStatics(
+  client: PoolClient,
+  setNumber?: number,
+): Promise<TraitStatics> {
+  const [unitRes, traitRes] = await Promise.all([
+    client.query<{ set_number: number; character_id: string; trait_ids: string[] | null }>(
+      `SELECT set_number, character_id, trait_ids
+         FROM units
+        WHERE ($1::int IS NULL OR set_number = $1)`,
+      [setNumber ?? null],
+    ),
+    client.query<{
+      set_number: number;
+      trait_id: string;
+      breakpoints: { minUnits?: number }[] | null;
+    }>(
+      `SELECT set_number, trait_id, breakpoints
+         FROM traits
+        WHERE ($1::int IS NULL OR set_number = $1)`,
+      [setNumber ?? null],
+    ),
+  ]);
+
+  const unitTraits = new Map<string, string[]>();
+  for (const r of unitRes.rows) {
+    unitTraits.set(`${r.set_number}:${r.character_id}`, r.trait_ids ?? []);
+  }
+  const breakpoints = new Map<string, number[]>();
+  for (const r of traitRes.rows) {
+    const mins = (Array.isArray(r.breakpoints) ? r.breakpoints : [])
+      .map((b) => b.minUnits ?? 0)
+      .filter((m) => m > 0)
+      .sort((a, b) => a - b);
+    // Single-[1] traits are one-unit markers (FioraUniqueTrait, GravesTrait…)
+    // — active on every board fielding the unit, so they carry no FRAME
+    // information and only flatten the similarity (a dozen 1.0-weight marker
+    // tokens drowned the real verticals when they were kept).
+    if (mins.length === 1 && mins[0] === 1) continue;
+    breakpoints.set(`${r.set_number}:${r.trait_id}`, mins);
+  }
+  // Emblem → trait by naming convention (TFT17_DarkStar → TFT17_Item_
+  // DarkStarEmblemItem), derived from the trait id's own prefix so it can only
+  // map emblems whose trait exists for the set.
+  const emblemTrait = new Map<string, string>();
+  for (const key of breakpoints.keys()) {
+    const sep = key.indexOf(':');
+    const setStr = key.slice(0, sep);
+    const traitId = key.slice(sep + 1);
+    const us = traitId.indexOf('_');
+    if (us <= 0) continue;
+    const pfx = traitId.slice(0, us); // e.g. 'TFT17'
+    const suffix = traitId.slice(us + 1); // e.g. 'DarkStar'
+    emblemTrait.set(`${setStr}:${pfx}_Item_${suffix}EmblemItem`, traitId);
+  }
+  return { unitTraits, breakpoints, emblemTrait };
+}
+
+/** Trait frame of one exact board: trait → activation index (how many
+ *  breakpoints the DISTINCT-unit count clears — 1 = bronze, higher = deeper
+ *  vertical; inactive traits are omitted). Copies never double-count a trait;
+ *  each worn emblem adds one unit to its trait. */
+function buildTraitFrame(
+  setNumber: number,
+  coreUnits: string[],
+  emblems: string[],
+  statics: TraitStatics,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const id of new Set(coreUnits)) {
+    for (const t of statics.unitTraits.get(`${setNumber}:${id}`) ?? []) {
+      counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+  }
+  for (const e of emblems) {
+    const t = statics.emblemTrait.get(`${setNumber}:${e}`);
+    if (t) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const frame = new Map<string, number>();
+  for (const [t, n] of counts) {
+    const mins = statics.breakpoints.get(`${setNumber}:${t}`);
+    if (!mins || mins.length === 0) continue; // unknown/pseudo trait
+    let idx = 0;
+    for (const m of mins) if (n >= m) idx += 1;
+    if (idx > 0) frame.set(t, idx);
+  }
+  return frame;
 }
 
 /** Static unit costs for the in-scope set(s), keyed `${set}:${characterId}`. */
@@ -84,6 +214,26 @@ async function loadUnitCosts(
   return bySetUnit;
 }
 
+/** Static lookups shared by every profile loader in one merge run — the
+ *  avg-level GROUP BY walks all of match_participants, so load it ONCE and
+ *  pass it down instead of once per loader call. */
+export interface MergeStatic {
+  costs: Map<string, number>;
+  levels: Map<number, number>;
+  traits: TraitStatics;
+}
+
+export async function loadMergeStatic(
+  client: PoolClient,
+  setNumber?: number,
+): Promise<MergeStatic> {
+  return {
+    costs: await loadUnitCosts(client, setNumber),
+    levels: await loadAvgLevels(client, setNumber),
+    traits: await loadTraitStatics(client, setNumber),
+  };
+}
+
 /**
  * Load merge-ready CompProfiles for every tier-relevant comp in scope.
  * Shared by runMerge and scripts/merge-eval.ts so the eval replays the exact
@@ -92,6 +242,7 @@ async function loadUnitCosts(
 export async function loadCompProfiles(
   client: PoolClient,
   setNumber?: number,
+  preloaded?: MergeStatic,
 ): Promise<CompProfile[]> {
   // ── 1. Tier-relevant comps in scope with their board counts. ───────────────
   // comp_stats.n is per (comp, patch, region, rank_bucket), so SUM gives the
@@ -147,8 +298,9 @@ export async function loadCompProfiles(
     [compIds, RANKED_TFT_QUEUE_ID],
   );
 
-  // ── 3. Static unit costs (flex/cap-slot detection + copySig gate). ─────────
-  const costBySetUnit = await loadUnitCosts(client, setNumber);
+  // ── 3. Static lookups: costs (flex/copySig gates), levels, trait frames. ────
+  const { costs: costBySetUnit, levels: avgLevels, traits: traitStatics } =
+    preloaded ?? (await loadMergeStatic(client, setNumber));
 
   // ── 4. Group raw unit rows by comp_id and build profiles. ──────────────────
   const rawByComp = new Map<number, RawUnitItem[]>();
@@ -169,21 +321,34 @@ export async function loadCompProfiles(
       rawRows: rawByComp.get(row.id) ?? [],
       costOf: (id) => costBySetUnit.get(`${row.set_number}:${id}`) ?? 0,
       emblems: emblemsFromSignature(row.signature),
+      avgLevel: avgLevels.get(row.id) ?? 0,
+      traitFrame: buildTraitFrame(
+        row.set_number,
+        row.core_units,
+        emblemsFromSignature(row.signature),
+        traitStatics,
+      ),
     }),
   );
 }
 
 /**
- * Load light profiles for the sub-floor tail: every comp in scope below the
- * merge floor but with >= MERGE_ASSIGN_MIN_SAMPLE total boards. Comps-table
- * data only — the tail is tens of thousands of rows, and it's the
- * participant_units fan-out (not this query) that made unfiltered merge
- * multi-minute. Shared with scripts/merge-eval.ts.
+ * Load light presence profiles for sub-floor comps in a total-board range:
+ * `minTotal <= SUM(cs.n) < maxTotal` (maxTotal omitted = unbounded). Comps-table
+ * data only — the sub-floor population is tens of thousands of rows, and it's
+ * the participant_units fan-out (not this query) that made unfiltered merge
+ * multi-minute. Callers: runMerge / merge-eval load the mid-tier
+ * (>= MERGE_SEED_MIN_TOTAL, joins the real merge) and the singleton tail
+ * (< MERGE_SEED_MIN_TOTAL, assign-only) as two slices of this.
  */
 export async function loadTailProfiles(
   client: PoolClient,
   setNumber?: number,
+  bounds?: { minTotal?: number; maxTotal?: number },
+  preloaded?: MergeStatic,
 ): Promise<CompProfile[]> {
+  const minTotal = bounds?.minTotal ?? MERGE_ASSIGN_MIN_SAMPLE;
+  const maxTotal = bounds?.maxTotal ?? null;
   const res = await client.query<{
     id: number;
     set_number: number;
@@ -203,11 +368,13 @@ export async function loadTailProfiles(
       WHERE ($1::int IS NULL OR c.set_number = $1)
       GROUP BY c.id
      HAVING COALESCE(MAX(cs.n), 0) < $2::int
-        AND COALESCE(SUM(cs.n), 0) >= $3::int`,
-    [setNumber ?? null, MERGE_MIN_SAMPLE, MERGE_ASSIGN_MIN_SAMPLE],
+        AND COALESCE(SUM(cs.n), 0) >= $3::int
+        AND ($4::int IS NULL OR COALESCE(SUM(cs.n), 0) < $4::int)`,
+    [setNumber ?? null, MERGE_MIN_SAMPLE, minTotal, maxTotal],
   );
 
-  const costBySetUnit = await loadUnitCosts(client, setNumber);
+  const { costs: costBySetUnit, levels: avgLevels, traits: traitStatics } =
+    preloaded ?? (await loadMergeStatic(client, setNumber));
 
   return res.rows.map((row) =>
     buildTailProfile({
@@ -218,6 +385,13 @@ export async function loadTailProfiles(
       statTotal: Number(row.board_count),
       costOf: (id) => costBySetUnit.get(`${row.set_number}:${id}`) ?? 0,
       emblems: emblemsFromSignature(row.signature),
+      avgLevel: avgLevels.get(row.id) ?? 0,
+      traitFrame: buildTraitFrame(
+        row.set_number,
+        row.core_units,
+        emblemsFromSignature(row.signature),
+        traitStatics,
+      ),
     }),
   );
 }
@@ -225,15 +399,24 @@ export async function loadTailProfiles(
 export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
   const client = await pool.connect();
   try {
-    const profiles = await loadCompProfiles(client, job.setNumber);
+    const shared = await loadMergeStatic(client, job.setNumber);
+    const floored = await loadCompProfiles(client, job.setNumber, shared);
+    // Mid-tier presence profiles join the real merge (see MERGE_SEED_MIN_TOTAL).
+    const mid = await loadTailProfiles(
+      client,
+      job.setNumber,
+      { minTotal: MERGE_SEED_MIN_TOTAL },
+      shared,
+    );
+    const profiles = [...floored, ...mid];
 
     if (profiles.length === 0) {
       ctx.setItems(0);
       return;
     }
 
-    // ── Run the merge algorithm over the floored comps. ─────────────────────
-    const { assignments, archetypes, archetypeProfiles } = mergeComps(profiles);
+    // ── Run the merge algorithm over floored + mid-tier comps. ──────────────
+    const { assignments, archetypes, archetypeProfiles } = await mergeComps(profiles);
 
     const ids: number[] = [];
     const labels: string[] = [];
@@ -242,15 +425,21 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
       labels.push(label);
     }
 
-    // ── Assign-only pass over the sub-floor tail. ────────────────────────────
+    // ── Assign-only pass over the singleton tail. ────────────────────────────
     // Frozen archetype profiles, so order doesn't matter and nothing dilutes.
-    const tail = await loadTailProfiles(client, job.setNumber);
+    const tail = await loadTailProfiles(
+      client,
+      job.setNumber,
+      { maxTotal: MERGE_SEED_MIN_TOTAL },
+      shared,
+    );
+    const assign = makeTailAssigner(archetypeProfiles);
     let tailAssigned = 0;
     for (let i = 0; i < tail.length; i++) {
       if (i > 0 && i % ASSIGN_YIELD_EVERY === 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      const label = assignTail(tail[i], archetypeProfiles);
+      const label = assign(tail[i]);
       if (label !== null) {
         ids.push(tail[i].compId);
         labels.push(label);
@@ -292,11 +481,11 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
       throw e;
     }
 
-    // Items reported = comps labeled this pass (floored + assigned tail).
+    // Items reported = comps labeled this pass (merged + assigned tail).
     ctx.setItems(ids.length);
     console.log(
-      `[merge] ${profiles.length} comps → ${archetypes.size} archetypes; ` +
-      `tail: ${tailAssigned}/${tail.length} assigned` +
+      `[merge] ${floored.length} floored + ${mid.length} mid-tier → ${archetypes.size} archetypes; ` +
+      `singles: ${tailAssigned}/${tail.length} assigned` +
       (job.setNumber ? ` (set ${job.setNumber})` : ''),
     );
   } finally {

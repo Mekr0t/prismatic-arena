@@ -38,7 +38,13 @@ import {
   type SufficientStats,
   type TierCutoffs,
 } from './queue/comp-stats-math';
-import { loadExampleTeams, styleAtUnits, EMPTY_TEAM } from './comps-example-team';
+import {
+  loadExampleTeams,
+  styleAtUnits,
+  EMPTY_TEAM,
+  EX_POOL_MEMBER_CAP,
+  type ExampleGroup,
+} from './comps-example-team';
 import { emblemsFromSignature } from './queue/comp-signature';
 import type {
   CarryPortraitVM,
@@ -95,12 +101,18 @@ const BUCKET_ORDER = [
 const NICHE_LIMIT = 100; // cap the niche list so a thin meta's long tail stays bounded
 // A 3★ above this cost is variance, not a win condition, so it never earns a
 // board the archetype's representative slot (reroll targets are cost 1–3).
-const REROLL_MAX_COST = 3;
+export const REROLL_MAX_COST = 3;
 
 const numEnv = (v: string | undefined, d: number): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 };
+
+/** Hit-shaped line floor: the share of an archetype's games that hit a 3★ on a
+ *  label carry before "the hit board" is treated as the line's identity. Shared
+ *  with the detail page's default-tab choice (same env knob) so "hit-shaped"
+ *  means one thing everywhere. */
+export const HITS_DEFAULT_MIN_SHARE = numEnv(process.env.DETAIL_HITS_DEFAULT_MIN_SHARE, 0.35);
 
 // The tier floor, applied to the POOLED archetype sample (Σ n across members in
 // the selected bucket) — same env knob the trend-tier writer uses per comp.
@@ -339,6 +351,8 @@ interface ParsedLabel {
   dupIds: string[];
   heroAugmentId: string | null;
   emblemIds: string[];
+  /** Augment-gated units (##gate: — e.g. Invader Zed boards). */
+  gatedIds: string[];
 }
 
 /** Parse a group key back into its archetype-label parts. Returns null for
@@ -350,16 +364,19 @@ function parseLabelKey(gkey: string): ParsedLabel | null {
   let dupIds: string[] = [];
   let heroAugmentId: string | null = null;
   let emblemIds: string[] = [];
+  let gatedIds: string[] = [];
   for (const tag of tags) {
     if (tag.startsWith('dup:')) dupIds = tag.slice(4).split('|').filter(Boolean);
     else if (tag.startsWith('aug:')) heroAugmentId = tag.slice(4) || null;
     else if (tag.startsWith('emb:')) emblemIds = tag.slice(4).split('|').filter(Boolean);
+    else if (tag.startsWith('gate:')) gatedIds = tag.slice(5).split('|').filter(Boolean);
   }
   return {
     carryIds: carryPart === 'no_carry' ? [] : carryPart.split('|').filter(Boolean),
     dupIds,
     heroAugmentId,
     emblemIds,
+    gatedIds,
   };
 }
 
@@ -409,6 +426,7 @@ function buildIdentity(row: CompStatRow, cat: CatalogT, label: ParsedLabel | nul
     keyTraits,
     dupUnits: (label?.dupIds ?? []).map((id) => cat.unit(id).name),
     heroAugmentUnit: label?.heroAugmentId ? cat.unit(label.heroAugmentId).name : null,
+    gatedUnits: (label?.gatedIds ?? []).map((id) => cat.unit(id).name),
     emblems: (label?.emblemIds ?? []).map((id) => {
       const it = cat.item(id);
       return { name: it.name, iconUrl: it.iconUrl };
@@ -480,13 +498,20 @@ export function buildArchetypeRow(
   );
   const carryStars = (m: CompStatRow): number =>
     asCarries(m.carries).filter((c) => labelCarries.has(c.character_id)).length;
+  // The hit board is the line's face ONLY when hitting is what the line does:
+  // 3★s count toward rep selection just for hit-shaped lines (≥ HITS share of
+  // pooled games hit a label carry). A 3%-hit line shows its most-played board
+  // — a lottery outcome must not be the example the row renders.
+  let hitN = 0;
+  for (const m of members) if (carryStars(m) > 0) hitN += m.n ?? 0;
+  const useStars = pooled.n > 0 && hitN / pooled.n >= HITS_DEFAULT_MIN_SHARE;
   const minRepN = Math.max(5, Math.ceil(pooled.n * 0.05));
   const eligible = members.filter((m) => (m.n ?? 0) >= minRepN);
   const pool = eligible.length > 0 ? eligible : members;
   let rep = pool[0];
-  let repStars = carryStars(rep);
+  let repStars = useStars ? carryStars(rep) : 0;
   for (const m of pool) {
-    const stars = carryStars(m);
+    const stars = useStars ? carryStars(m) : 0;
     const mn = m.n ?? 0;
     const rn = rep.n ?? 0;
     if (
@@ -644,17 +669,18 @@ export function resolveFamily(
 }
 
 /** Tier-list row for a family: the representative variant, with the family's
- *  total play rate and a variant count for the "+N variants" marker. */
+ *  total play rate and a variant count for the "+N variants" marker. Also
+ *  returns the variant itself — its member set is the row's example scope. */
 function foldFamily(
   members: CompStatRow[],
   cat: CatalogT,
   bucketTotal: number,
-): { row: CompRowVM; repCompId: number; repN: number } {
+): { row: CompRowVM; repCompId: number; repN: number; variant: FamilyVariant } {
   const fam = resolveFamily(members, cat, bucketTotal);
   const rep = fam.variants.find((v) => v.emblemKey === fam.representativeKey) ?? fam.variants[0];
   rep.row.variantCount = fam.variants.length;
   rep.row.playRate = bucketTotal > 0 ? fam.familyN / bucketTotal : 0;
-  return { row: rep.row, repCompId: rep.repCompId, repN: rep.repN };
+  return { row: rep.row, repCompId: rep.repCompId, repN: rep.repN, variant: rep };
 }
 
 function collectRows(groups: TierGroupVM[], niche: CompRowVM[] | null): CompRowVM[] {
@@ -739,13 +765,27 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
 
   // Each archetype (gkey) is a family: split its members into emblem variants
   // (by each comp's signature emblems), then fold to one representative row
-  // (see foldFamily). Track each representative's OWN n for its example board.
-  const repOwnN = new Map<number, number>();
+  // (see foldFamily). Each row's example/identity scope is its representative
+  // VARIANT's own members — pooled, so the strip and badges agree with the
+  // pooled stats — with folded-in emblem members excluded from the base
+  // variant's scope (a folded emblem board must never drive the base
+  // thumbnail), mirroring the detail page's build-evidence rule.
+  const exampleScope = new Map<number, { compIds: number[]; n: number }>();
   const archetypeRows: CompRowVM[] = [];
   const nicheRows: CompRowVM[] = [];
   for (const [gkey, members] of groupByKey(memberRows)) {
-    const { row, repCompId, repN } = foldFamily(members, cat, bucketTotal);
-    repOwnN.set(repCompId, repN);
+    const { row, variant } = foldFamily(members, cat, bucketTotal);
+    const own =
+      variant.emblemKey === ''
+        ? variant.members.filter((m) => emblemsFromSignature(m.signature).length === 0)
+        : variant.members;
+    const top = [...own]
+      .sort((a, b) => (b.n ?? 0) - (a.n ?? 0) || a.comp_id - b.comp_id)
+      .slice(0, EX_POOL_MEMBER_CAP);
+    exampleScope.set(row.identity.compId, {
+      compIds: top.map((m) => m.comp_id),
+      n: top.reduce((s, m) => s + (m.n ?? 0), 0),
+    });
     if (mainKeySet.has(gkey)) archetypeRows.push(row);
     else nicheRows.push(row);
   }
@@ -784,23 +824,28 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
   // one aggregation pass scoped to the same bucket. Rows are mutated in place.
   const allRows = collectRows(groups, niche);
   if (allRows.length > 0) {
-    const compIds = [...new Set(allRows.map((r) => r.identity.compId))];
-    const nByComp = new Map<number, number>();
+    const exGroups: ExampleGroup[] = allRows.map((r) => {
+      const scope = exampleScope.get(r.identity.compId);
+      return {
+        key: String(r.identity.compId),
+        compIds: scope?.compIds ?? [r.identity.compId],
+        n: scope?.n ?? r.metrics.n,
+        // Reroll-cost label carries render their hit state (see
+        // EX_STAR_HIT_MIN_SHARE) — a 3★ 4/5-cost is lottery, never intent.
+        hitTargetIds: r.identity.carries
+          .filter((c) => c.cost >= 1 && c.cost <= REROLL_MAX_COST)
+          .map((c) => c.characterId),
+      };
+    });
+    const teams = await loadExampleTeams(exGroups, patchId, region, rankBucket, cat);
     for (const r of allRows) {
-      // Every row (main + niche) is a pooled group: use the representative's
-      // OWN n — its board alone is what's aggregated, so the pooled n would
-      // understate per-unit frequencies.
-      const own = repOwnN.get(r.identity.compId);
-      nByComp.set(r.identity.compId, own ?? r.metrics.n);
-    }
-    const teams = await loadExampleTeams(compIds, patchId, region, rankBucket, nByComp, cat);
-    for (const r of allRows) {
-      r.exampleTeam = teams.get(r.identity.compId) ?? EMPTY_TEAM;
-      // The clusterer writes no key_traits, so backfill the trait chips from
-      // the example team's active traits: highest non-unique style first (the
-      // comp's vertical), then unit count. This is what puts the "[trait]"
-      // prefix on the display name.
-      if (r.identity.keyTraits.length === 0 && r.exampleTeam.traits.length > 0) {
+      r.exampleTeam = teams.get(String(r.identity.compId)) ?? EMPTY_TEAM;
+      // Trait chips + display name come from the POOLED example traits — the
+      // same source the strip renders, so the badge can never promise a trait
+      // tier the pooled boards don't actually hit (the "6 Dark Star badge on a
+      // 5 Dark Star strip" review class). Stored key_traits (rep-scoped) are
+      // only kept when the group has no board data at all.
+      if (r.exampleTeam.traits.length > 0) {
         const top = [...r.exampleTeam.traits]
           .sort(
             (a, b) =>
