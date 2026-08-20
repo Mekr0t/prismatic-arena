@@ -7,10 +7,7 @@
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import type { SelectorOptions, TierListSelection } from '@/server/comps-service';
-
-function bucketLabel(b: string): string {
-  return b.charAt(0).toUpperCase() + b.slice(1);
-}
+import { bucketLabel } from '@/config/rank-buckets';
 
 export function TierControls({
   options,

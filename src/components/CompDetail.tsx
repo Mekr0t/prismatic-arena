@@ -8,7 +8,7 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
-import { useGameData } from '@/lib/game-data';
+import { useEntityTrigger } from '@/lib/game-data';
 import { ExampleTeam } from './ExampleTeam';
 import type {
   CompDetailVM,
@@ -18,6 +18,7 @@ import type {
   DetailTrendPointVM,
   CarryPortraitVM,
   KeyTraitChipVM,
+  ExampleItemVM,
 } from '@/server/comps-types';
 
 const fmtAvg = (v: number): string => v.toFixed(2);
@@ -25,38 +26,37 @@ const fmtPct = (v: number, digits = 1): string => `${(v * 100).toFixed(digits)}%
 const fmtDelta = (v: number): string => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
 
+/** Item icon; `stopPropagation` keeps a click off the sibling unit tile. */
+function ItemIcon({ item, stop }: { item: ExampleItemVM; stop?: boolean }) {
+  const trigger = useEntityTrigger({
+    type: 'item',
+    id: item.itemId,
+    name: item.name,
+    stopPropagation: stop,
+  });
+  return <img className="ex-itemimg" src={item.iconUrl ?? ''} alt={item.name} {...trigger} />;
+}
+
 function UnitTile({ unit, showFreq }: { unit: DetailUnitVM; showFreq: boolean }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({
+    type: 'unit',
+    id: unit.characterId,
+    name: unit.name,
+    label: unit.modalStar === 3 ? `${unit.name}, 3 star` : unit.name,
+  });
   return (
     <div className="ex-unit cd-unit">
-      <div className={`ex-star${unit.modalStar === 3 ? '' : ' hide'}`}>★★★</div>
-      <div
-        className={`ex-tile c${unit.cost || 1}`}
-        onMouseEnter={(e) => showTooltip(e, 'unit', unit.characterId, unit.name)}
-        onMouseLeave={hideTooltip}
-        onClick={() => openModal('unit', unit.characterId, unit.name)}
-      >
-        {unit.iconUrl ? <img src={unit.iconUrl} alt={unit.name} /> : <span>{unit.name}</span>}
+      <div className={`ex-star${unit.modalStar === 3 ? '' : ' hide'}`} aria-hidden>
+        ★★★
+      </div>
+      <div className={`ex-tile c${unit.cost || 1}`} {...trigger}>
+        {unit.iconUrl ? <img src={unit.iconUrl} alt="" /> : <span>{unit.name}</span>}
       </div>
       {unit.items.length > 0 && (
         <div className="ex-items">
           {unit.items.map((it, i) =>
             it.iconUrl ? (
-              <img
-                key={`${it.itemId}:${i}`}
-                className="ex-itemimg"
-                src={it.iconUrl}
-                alt={it.name}
-                onMouseEnter={(e) => {
-                  e.stopPropagation();
-                  showTooltip(e, 'item', it.itemId, it.name);
-                }}
-                onMouseLeave={hideTooltip}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openModal('item', it.itemId, it.name);
-                }}
-              />
+              <ItemIcon key={`${it.itemId}:${i}`} item={it} stop />
             ) : (
               <i key={`${it.itemId}:${i}`} className="ex-itemimg ex-item-ph" title={it.name} />
             ),
@@ -82,14 +82,14 @@ function stripTiles(u: DetailUnitVM, showFreq: boolean) {
 }
 
 function TraitChip({ trait }: { trait: KeyTraitChipVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({
+    type: 'trait',
+    id: trait.traitId,
+    name: trait.name,
+    label: `${trait.name}, ${trait.minUnits} units`,
+  });
   return (
-    <span
-      className={`ex-trait s${trait.style || 1}`}
-      onMouseEnter={(e) => showTooltip(e, 'trait', trait.traitId, trait.name)}
-      onMouseLeave={hideTooltip}
-      onClick={() => openModal('trait', trait.traitId, trait.name)}
-    >
+    <span className={`ex-trait s${trait.style || 1}`} {...trigger}>
       {trait.iconUrl ? <img src={trait.iconUrl} alt="" /> : <span className="ex-dot" />}
       <span className="ex-n">{trait.minUnits}</span>
     </span>
@@ -97,15 +97,10 @@ function TraitChip({ trait }: { trait: KeyTraitChipVM }) {
 }
 
 function MiniUnit({ unit }: { unit: CarryPortraitVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({ type: 'unit', id: unit.characterId, name: unit.name });
   return (
-    <span
-      className={`cd-mini c${unit.cost || 1}`}
-      onMouseEnter={(e) => showTooltip(e, 'unit', unit.characterId, unit.name)}
-      onMouseLeave={hideTooltip}
-      onClick={() => openModal('unit', unit.characterId, unit.name)}
-    >
-      {unit.iconUrl ? <img src={unit.iconUrl} alt={unit.name} /> : unit.name}
+    <span className={`cd-mini c${unit.cost || 1}`} {...trigger}>
+      {unit.iconUrl ? <img src={unit.iconUrl} alt="" /> : unit.name}
     </span>
   );
 }
@@ -135,7 +130,6 @@ function VariantRow({ v }: { v: DetailVariantVM }) {
 }
 
 function BuildRow({ build }: { build: DetailBuildVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
   return (
     <div className="cd-build">
       <MiniUnit
@@ -152,14 +146,7 @@ function BuildRow({ build }: { build: DetailBuildVM }) {
             <span className="cd-build-items">
               {s.items.map((it, j) =>
                 it.iconUrl ? (
-                  <img
-                    key={`${it.itemId}:${j}`}
-                    src={it.iconUrl}
-                    alt={it.name}
-                    onMouseEnter={(e) => showTooltip(e, 'item', it.itemId, it.name)}
-                    onMouseLeave={hideTooltip}
-                    onClick={() => openModal('item', it.itemId, it.name)}
-                  />
+                  <ItemIcon key={`${it.itemId}:${j}`} item={it} />
                 ) : (
                   <i key={`${it.itemId}:${j}`} className="ex-item-ph" title={it.name} />
                 ),
@@ -395,9 +382,12 @@ export function CompDetail({
 
       <div className="cd-cols">
         <div className="cd-panel">
+          {/* aria-pressed carries the selected state to assistive tech — the
+              `active` class alone is a visual-only signal. */}
           <div className="cd-tabs">
             <button
               type="button"
+              aria-pressed={panel === 'placement'}
               className={panel === 'placement' ? 'active' : ''}
               onClick={() => setPanel('placement')}
             >
@@ -405,6 +395,7 @@ export function CompDetail({
             </button>
             <button
               type="button"
+              aria-pressed={panel === 'hits'}
               className={panel === 'hits' ? 'active' : ''}
               onClick={() => setPanel('hits')}
             >
@@ -412,6 +403,7 @@ export function CompDetail({
             </button>
             <button
               type="button"
+              aria-pressed={panel === 'trend'}
               className={panel === 'trend' ? 'active' : ''}
               onClick={() => setPanel('trend')}
             >

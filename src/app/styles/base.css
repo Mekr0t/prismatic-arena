@@ -61,6 +61,20 @@ body {
 .num { font-variant-numeric: tabular-nums; font-family: var(--mono); }
 a    { color: inherit; }
 
+/* ── Focus ───────────────────────────────────────────────
+   The quality floor in TFT-Frontend-Spec.md §2.4 is "visible keyboard focus
+   (the --accent ring)". It was only ever applied to a handful of individual
+   inputs, so every other tab stop — including every unit/trait/item trigger —
+   had no indicator at all. One global :focus-visible rule covers them, and
+   because it is :focus-visible (not :focus) it never shows on mouse clicks.
+   Anything needing a tighter ring overrides it locally; nothing should set
+   `outline: none` without providing a replacement. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 /* ── Shell ───────────────────────────────────────────── */
 .page { max-width: 1080px; margin: 0 auto; padding: 22px; }
 

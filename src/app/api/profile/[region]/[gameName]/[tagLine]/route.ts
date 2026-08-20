@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getPlayerProfile, ProfileNotFoundError } from '@/server/profile-service';
 import { isPlatform } from '@/config/regions';
 import { handleApiError } from '@/app/api/utils';
+import { limitRiotRead } from '@/server/rate-limit';
 
 // This route calls Riot on demand, so it must not be statically cached.
 export const dynamic = 'force-dynamic';
@@ -21,6 +22,15 @@ export async function GET(
   const tag = decodeURIComponent(tagLine).trim();
   if (!name || name.length > 16 || !tag || tag.length > 5) {
     return NextResponse.json({ error: 'Invalid Riot ID' }, { status: 400 });
+  }
+
+  // A cold profile fans out to ~23 Riot calls; throttle before spending them.
+  const limit = await limitRiotRead('profile');
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } },
+    );
   }
 
   try {

@@ -1,7 +1,18 @@
-// scheduler.ts — repeatable-job plumbing. Registers one BullMQ job scheduler per
-// stage so the pipeline self-drives on a cadence instead of four manual RUN_*
-// triggers. The stages stay independent (each idempotent: full recompute), so
-// they run on their own intervals and converge — no strict chaining needed.
+// scheduler.ts — repeatable-job plumbing. Registers the two things that need a
+// cadence, and nothing else:
+//
+//   • ladder-crawl — the producer. Independent of the derived stages; it just
+//     keeps the frontier draining and matches arriving.
+//   • the PIPELINE HEAD (cluster) — everything downstream advances from it via
+//     ./chain.ts, on success only.
+//
+// It used to register cluster, rollup, merge and trend-tier as four independent
+// repeatables, on the theory that idempotent full-recompute stages converge on
+// their own. They don't: cluster PRUNES board-less comps and deletes their
+// comp_stats / tier_list_entries rows, which rollup and trend-tier are
+// concurrently rebuilding. Overlapping runs left the read path serving
+// comp_stats for comps that no longer existed. Chaining removes the overlap
+// rather than guarding it — see the header of ./chain.ts.
 //
 // IMPORTANT — this is SUPERVISED plumbing, not an unattended production firehose.
 // The dev Riot key expires every 24h and caps ~20 rps / 100 per 2 min, so the
@@ -14,27 +25,22 @@
 // schedulers with SCHED_CLEAR=1 (re-running RUN_SCHEDULER only updates cadences).
 
 import { makeQueue, QUEUE } from './queues';
+import { CHAIN_HEAD } from './chain';
 import { CRAWL } from '@/config/crawl';
 import type { LadderCrawlJob } from './stages/ladder-crawl';
 import type { ClusterJob } from './stages/cluster';
-import type { RollupJob } from './stages/rollup';
-import type { TrendTierJob } from './stages/trend-tier';
-import type { MergeJob } from './stages/merge';
 
 const minutes = (v: string | undefined, fallback: number): number => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-// Cadences in minutes (env-overridable). Conservative defaults: crawl often
-// enough to catch new games, cluster + rollup hourly, retier daily (the trend
-// snapshot is one datapoint per day, deduped on date).
+// Cadences in minutes (env-overridable). SCHED_PIPELINE_MIN paces the whole
+// derived-stats chain; it falls back to the old SCHED_CLUSTER_MIN so an existing
+// .env keeps working without edits.
 const SCHEDULE = {
   crawlMin: minutes(process.env.SCHED_CRAWL_MIN, 30),
-  clusterMin: minutes(process.env.SCHED_CLUSTER_MIN, 60),
-  rollupMin: minutes(process.env.SCHED_ROLLUP_MIN, 60),
-  mergeMin: minutes(process.env.SCHED_MERGE_MIN, 60),
-  trendTierMin: minutes(process.env.SCHED_TREND_TIER_MIN, 1440),
+  pipelineMin: minutes(process.env.SCHED_PIPELINE_MIN ?? process.env.SCHED_CLUSTER_MIN, 60),
 } as const;
 
 const MIN_MS = 60_000;
@@ -43,67 +49,71 @@ const MIN_MS = 60_000;
 // than creating a duplicate schedule.
 const SCHED_ID = {
   crawl: 'sched:ladder-crawl',
-  cluster: 'sched:cluster',
-  rollup: 'sched:rollup',
-  merge: 'sched:merge',
-  trendTier: 'sched:trend-tier',
+  pipeline: 'sched:cluster', // kept: the head still runs on the cluster queue
 } as const;
 
-/** Register (or update) every stage's repeatable schedule, then release the
- *  producer connections — the long-running workers carry the schedule forward. */
+// Ids registered by the pre-chain scheduler. clearSchedules removes these too so
+// upgrading doesn't strand orphan repeatables in Redis that would re-introduce
+// exactly the overlap the chain exists to prevent.
+const LEGACY = [
+  { queue: QUEUE.rollup, id: 'sched:rollup' },
+  { queue: QUEUE.merge, id: 'sched:merge' },
+  { queue: QUEUE.trendTier, id: 'sched:trend-tier' },
+] as const;
+
+/** Register (or update) the crawl + pipeline-head schedules, drop any legacy
+ *  per-stage ones, then release the producer connections — the long-running
+ *  workers carry the schedule forward. */
 export async function registerSchedules(): Promise<void> {
-  const crawlQ     = makeQueue(QUEUE.ladderCrawl);
-  const clusterQ   = makeQueue(QUEUE.cluster);
-  const rollupQ    = makeQueue(QUEUE.rollup);
-  const mergeQ     = makeQueue(QUEUE.merge);
-  const trendTierQ = makeQueue(QUEUE.trendTier);
+  const crawlQ = makeQueue(QUEUE.ladderCrawl);
+  const headQ = makeQueue(CHAIN_HEAD);
+  const legacyQs = LEGACY.map((l) => ({ ...l, q: makeQueue(l.queue) }));
   try {
     await crawlQ.upsertJobScheduler(
       SCHED_ID.crawl,
       { every: SCHEDULE.crawlMin * MIN_MS },
       { name: 'crawl', data: { platform: CRAWL.platform } satisfies LadderCrawlJob },
     );
-    await clusterQ.upsertJobScheduler(
-      SCHED_ID.cluster,
-      { every: SCHEDULE.clusterMin * MIN_MS },
+    await headQ.upsertJobScheduler(
+      SCHED_ID.pipeline,
+      { every: SCHEDULE.pipelineMin * MIN_MS },
       { name: 'cluster', data: {} satisfies ClusterJob },
     );
-    await rollupQ.upsertJobScheduler(
-      SCHED_ID.rollup,
-      { every: SCHEDULE.rollupMin * MIN_MS },
-      { name: 'rollup', data: {} satisfies RollupJob },
-    );
-    await mergeQ.upsertJobScheduler(
-      SCHED_ID.merge,
-      { every: SCHEDULE.mergeMin * MIN_MS },
-      { name: 'merge', data: {} satisfies MergeJob },
-    );
-    await trendTierQ.upsertJobScheduler(
-      SCHED_ID.trendTier,
-      { every: SCHEDULE.trendTierMin * MIN_MS },
-      { name: 'trend-tier', data: {} satisfies TrendTierJob },
-    );
+
+    // Remove any schedulers left over from the pre-chain layout.
+    for (const { q, id } of legacyQs) {
+      try {
+        await q.removeJobScheduler(id);
+      } catch {
+        // Never registered on this install — nothing to remove.
+      }
+    }
+
     console.log(
-      `[scheduler] registered — crawl ${SCHEDULE.crawlMin}m · cluster ${SCHEDULE.clusterMin}m · ` +
-        `rollup ${SCHEDULE.rollupMin}m · merge ${SCHEDULE.mergeMin}m · trend-tier ${SCHEDULE.trendTierMin}m`,
+      `[scheduler] registered — crawl ${SCHEDULE.crawlMin}m · ` +
+        `pipeline ${SCHEDULE.pipelineMin}m (cluster → rollup → merge → trend-tier)`,
     );
   } finally {
-    await Promise.all([crawlQ.close(), clusterQ.close(), rollupQ.close(), mergeQ.close(), trendTierQ.close()]);
+    await Promise.all([crawlQ.close(), headQ.close(), ...legacyQs.map(({ q }) => q.close())]);
   }
 }
 
-/** Remove every stage schedule (the workers will then sit idle as consumers). */
+/** Remove every schedule, current and legacy (the workers then sit idle as consumers). */
 export async function clearSchedules(): Promise<void> {
   const entries = [
     { q: makeQueue(QUEUE.ladderCrawl), id: SCHED_ID.crawl },
-    { q: makeQueue(QUEUE.cluster), id: SCHED_ID.cluster },
-    { q: makeQueue(QUEUE.rollup), id: SCHED_ID.rollup },
-    { q: makeQueue(QUEUE.merge), id: SCHED_ID.merge },
-    { q: makeQueue(QUEUE.trendTier), id: SCHED_ID.trendTier },
+    { q: makeQueue(CHAIN_HEAD), id: SCHED_ID.pipeline },
+    ...LEGACY.map((l) => ({ q: makeQueue(l.queue), id: l.id })),
   ];
   try {
-    for (const { q, id } of entries) await q.removeJobScheduler(id);
-    console.log('[scheduler] cleared all stage schedules');
+    for (const { q, id } of entries) {
+      try {
+        await q.removeJobScheduler(id);
+      } catch {
+        // Already absent.
+      }
+    }
+    console.log('[scheduler] cleared all schedules (including legacy per-stage ones)');
   } finally {
     await Promise.all(entries.map(({ q }) => q.close()));
   }

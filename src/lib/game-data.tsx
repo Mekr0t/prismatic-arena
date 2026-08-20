@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { LibUnit, LibTrait, LibItem, LibraryData } from '@/server/library-data';
 import { RichText, richFirstLine } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
@@ -34,7 +34,9 @@ interface ModalState {
 
 interface CtxValue {
   store: GameDataStore | null;
-  showTooltip(e: React.MouseEvent, type: EntityType, id: string, name: string): void;
+  /** Accepts any SyntheticEvent so focus can position the tooltip too, not just
+   *  hover — the tooltip only needs `currentTarget` for its bounding box. */
+  showTooltip(e: React.SyntheticEvent, type: EntityType, id: string, name: string): void;
   hideTooltip(): void;
   openModal(type: EntityType, id: string, name: string): void;
 }
@@ -49,6 +51,66 @@ export function useGameData(): CtxValue {
   const ctx = useContext(Ctx);
   if (!ctx) return { store: null, showTooltip: NOOP, hideTooltip: NOOP, openModal: NOOP };
   return ctx;
+}
+
+export interface EntityTriggerOptions {
+  type: EntityType;
+  id: string;
+  name: string;
+  /** Accessible name; defaults to `name`. Needed where the visible content is an
+   *  icon plus a bare number (trait chips) rather than the entity's name. */
+  label?: string;
+  /** Stop propagation — for item icons sitting next to a unit tile trigger. */
+  stopPropagation?: boolean;
+}
+
+/**
+ * The interaction contract for every unit / trait / item trigger in the app.
+ *
+ * These triggers are styled `div`/`span`/`img` elements, not buttons — the CSS
+ * is hand-tuned global CSS across eight partials, and converting them to real
+ * `<button>`s would mean resetting appearance in all of them. So they take the
+ * ARIA button pattern instead: a role, a tab stop, and an Enter/Space handler,
+ * which is equivalent for assistive tech as long as all three are present. That
+ * is the point of centralizing it here — a call site can't accidentally ship two
+ * of the three.
+ *
+ * The `onFocus`/`onBlur` pair matters as much as the click handling: the tooltip
+ * used to fire on `onMouseEnter` alone, so keyboard and touch users could not
+ * reach any unit, trait, or item detail anywhere in the app (WCAG 2.1.1
+ * Keyboard, and 1.4.13 for the hover-only content).
+ */
+export function useEntityTrigger({
+  type,
+  id,
+  name,
+  label,
+  stopPropagation,
+}: EntityTriggerOptions) {
+  const { showTooltip, hideTooltip, openModal } = useGameData();
+  return {
+    role: 'button',
+    tabIndex: 0,
+    'aria-haspopup': 'dialog',
+    'aria-label': label ?? name,
+    onMouseEnter: (e: React.MouseEvent) => {
+      if (stopPropagation) e.stopPropagation();
+      showTooltip(e, type, id, name);
+    },
+    onMouseLeave: hideTooltip,
+    onFocus: (e: React.FocusEvent) => showTooltip(e, type, id, name),
+    onBlur: hideTooltip,
+    onClick: (e: React.MouseEvent) => {
+      if (stopPropagation) e.stopPropagation();
+      openModal(type, id, name);
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault(); // Space would otherwise scroll the page
+      if (stopPropagation) e.stopPropagation();
+      openModal(type, id, name);
+    },
+  } as const;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -85,13 +147,54 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {});
   }, []);
 
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const modalOpen = modal !== null;
+
+  // Focus RESTORE, keyed on open/closed rather than on `modal` itself: opening a
+  // trait popup from inside a unit popup swaps `modal` without closing the
+  // dialog, and re-running this then would capture a trigger that is about to be
+  // unmounted and hand focus to a detached node on close.
+  useEffect(() => {
+    if (!modalOpen) return;
+    const opener = document.activeElement as HTMLElement | null;
+    return () => opener?.focus?.();
+  }, [modalOpen]);
+
+  // Escape to close, and a Tab trap so focus can't wander to the page behind an
+  // aria-modal dialog (which screen readers present as the only content).
   useEffect(() => {
     if (!modal) return;
-    const fn = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModal(null);
+    modalRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setModal(null);
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const panel = modalRef.current;
+      if (!panel) return;
+      const focusable = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) {
+        e.preventDefault(); // nothing to move to; keep focus on the panel
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener('keydown', fn);
-    return () => window.removeEventListener('keydown', fn);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [modal]);
 
   const showTooltip = useCallback(
@@ -146,6 +249,7 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
       {tooltip && (
         <div
           className={`gd-tooltip${tooltip.trait ? ' gd-tt-trait' : ''}`}
+          role="tooltip"
           style={{ left: tooltip.x, top: tooltip.y }}
         >
           <span className="gd-tt-name">{tooltip.name}</span>
@@ -168,8 +272,19 @@ export function GameDataProvider({ children }: { children: React.ReactNode }) {
       )}
 
       {modal && (
-        <div className="gd-backdrop" role="dialog" aria-modal="true" onClick={closeModal}>
-          <div className="gd-modal" onClick={(e) => e.stopPropagation()}>
+        // The dialog roles belong on the PANEL, not the backdrop — the backdrop is
+        // the click-to-dismiss surface, and naming it the dialog made the
+        // dismiss target and the dialog the same node.
+        <div className="gd-backdrop" onClick={closeModal}>
+          <div
+            className="gd-modal"
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={modal.name}
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+          >
             <button className="lib-detail-close" onClick={closeModal} aria-label="Close">
               ✕
             </button>
@@ -211,8 +326,18 @@ function Fallback({ name }: { name: string }) {
   );
 }
 
+/** One trait pill inside the unit popup. A component, not inline JSX, because
+ *  useEntityTrigger is a hook and cannot be called from a `.map` callback. */
+function TraitPill({ trait }: { trait: LibTrait }) {
+  const trigger = useEntityTrigger({ type: 'trait', id: trait.id, name: trait.name });
+  return (
+    <span className="gd-trait-pill gd-trait-link" {...trigger}>
+      {trait.name}
+    </span>
+  );
+}
+
 function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
   const costColor = COST_COLOR[unit.cost] ?? 'var(--text-dim)';
   const unitTraits = unit.traits
     .map((id) => store.traits.get(id))
@@ -242,15 +367,7 @@ function UnitPopup({ unit, store }: { unit: LibUnit; store: GameDataStore }) {
           {unitTraits.length > 0 && (
             <div className="lib-detail-traits" style={{ marginTop: 6 }}>
               {unitTraits.map((t) => (
-                <span
-                  key={t.id}
-                  className="gd-trait-pill gd-trait-link"
-                  onMouseEnter={(e) => showTooltip(e, 'trait', t.id, t.name)}
-                  onMouseLeave={hideTooltip}
-                  onClick={() => openModal('trait', t.id, t.name)}
-                >
-                  {t.name}
-                </span>
+                <TraitPill key={t.id} trait={t} />
               ))}
             </div>
           )}

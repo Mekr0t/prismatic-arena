@@ -5,35 +5,39 @@
 // ONLY when their modal star is 3 (no pip = 2-star, the standard convention);
 // items are deferred (step 3). Everything wires the shared useGameData popups.
 
-import { useGameData } from '@/lib/game-data';
+import { useEntityTrigger } from '@/lib/game-data';
 import type { ExampleUnitVM, ExampleTraitVM, ExampleTeamVM } from '@/server/comps-service';
 
+function ExampleItem({ item }: { item: ExampleUnitVM['items'][number] }) {
+  const trigger = useEntityTrigger({
+    type: 'item',
+    id: item.itemId,
+    name: item.name,
+    stopPropagation: true,
+  });
+  return <img className="ex-itemimg" src={item.iconUrl ?? ''} alt={item.name} {...trigger} />;
+}
+
 function ExampleUnit({ unit }: { unit: ExampleUnitVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({
+    type: 'unit',
+    id: unit.characterId,
+    name: unit.name,
+    label: unit.star === 3 ? `${unit.name}, 3 star` : unit.name,
+  });
   return (
     <div className="ex-unit">
-      <div className={`ex-star${unit.star === 3 ? '' : ' hide'}`}>★★★</div>
-      <div
-        className={`ex-tile c${unit.cost || 1}`}
-        onMouseEnter={(e) => showTooltip(e, 'unit', unit.characterId, unit.name)}
-        onMouseLeave={hideTooltip}
-        onClick={() => openModal('unit', unit.characterId, unit.name)}
-      >
-        {unit.iconUrl ? <img src={unit.iconUrl} alt={unit.name} /> : <span>{unit.name}</span>}
+      <div className={`ex-star${unit.star === 3 ? '' : ' hide'}`} aria-hidden>
+        ★★★
+      </div>
+      <div className={`ex-tile c${unit.cost || 1}`} {...trigger}>
+        {unit.iconUrl ? <img src={unit.iconUrl} alt="" /> : <span>{unit.name}</span>}
       </div>
       {unit.items.length > 0 && (
         <div className="ex-items">
           {unit.items.map((it, i) =>
             it.iconUrl ? (
-              <img
-                key={`${it.itemId}:${i}`}
-                className="ex-itemimg"
-                src={it.iconUrl}
-                alt={it.name}
-                onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, 'item', it.itemId, it.name); }}
-                onMouseLeave={hideTooltip}
-                onClick={(e) => { e.stopPropagation(); openModal('item', it.itemId, it.name); }}
-              />
+              <ExampleItem key={`${it.itemId}:${i}`} item={it} />
             ) : (
               <i key={`${it.itemId}:${i}`} className="ex-itemimg ex-item-ph" title={it.name} />
             ),
@@ -45,14 +49,14 @@ function ExampleUnit({ unit }: { unit: ExampleUnitVM }) {
 }
 
 function ExampleTrait({ trait }: { trait: ExampleTraitVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({
+    type: 'trait',
+    id: trait.traitId,
+    name: trait.name,
+    label: `${trait.name}, ${trait.numUnits} units`,
+  });
   return (
-    <span
-      className={`ex-trait ${trait.unique ? 'unique' : `s${trait.style}`}`}
-      onMouseEnter={(e) => showTooltip(e, 'trait', trait.traitId, trait.name)}
-      onMouseLeave={hideTooltip}
-      onClick={() => openModal('trait', trait.traitId, trait.name)}
-    >
+    <span className={`ex-trait ${trait.unique ? 'unique' : `s${trait.style}`}`} {...trigger}>
       {trait.iconUrl ? <img src={trait.iconUrl} alt="" /> : <span className="ex-dot" />}
       <span className="ex-n">{trait.numUnits}</span>
     </span>

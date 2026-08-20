@@ -3,15 +3,12 @@
 // URL search params (?patch=&region=&bucket=&niche=), matching the match-detail
 // page pattern (force-dynamic, async searchParams). No API route in v1.
 
-import { getTierList } from '@/server/comps-service';
+import { getTierListCached } from '@/server/comps-service';
 import { TierControls } from '@/components/TierControls';
+import { bucketLabel } from '@/config/rank-buckets';
 import { TierTable } from '@/components/TierTable';
 
 export const dynamic = 'force-dynamic';
-
-function bucketLabel(b: string): string {
-  return b.charAt(0).toUpperCase() + b.slice(1);
-}
 
 export default async function CompsPage({
   searchParams,
@@ -21,7 +18,7 @@ export default async function CompsPage({
   const sp = await searchParams;
   const patchId = sp.patch ? Number(sp.patch) : undefined;
 
-  const data = await getTierList({
+  const data = await getTierListCached({
     patchId: Number.isFinite(patchId) ? patchId : undefined,
     region: sp.region,
     rankBucket: sp.bucket,

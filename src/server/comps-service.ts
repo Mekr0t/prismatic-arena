@@ -28,6 +28,7 @@
 //   3) member rows for the qualifying groups (and the niche groups when the
 //      toggle is on).
 
+import { unstable_cache } from 'next/cache';
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
 import {
@@ -84,19 +85,23 @@ export type {
 // ── Tunables ─────────────────────────────────────────────────────────────────
 
 const TIER_ORDER = ['S', 'A', 'B', 'C', 'D'] as const;
-// Canonical rank-bucket ordering for the selector (best first); unknown buckets
-// sort after these, alphabetically. apex-only today, but ready for rank bands.
+// Canonical rank-bucket ordering for the selector (best first); anything not
+// listed sorts after these, alphabetically.
+//
+// These are `RankBucket` VALUES, not Riot tier names — the list used to hold
+// 'grandmaster'/'master'/'emerald'/etc., none of which are bucket labels, so
+// every real bucket except 'challenger' fell through to the alphabetical tail.
+// 'apex_mixed' is the pre-R1 unverified population (migration 0018); it sorts
+// just below the verified apex buckets, and 'unknown' sorts last.
 const BUCKET_ORDER = [
   'challenger',
-  'grandmaster',
-  'master',
+  'master_plus',
+  'apex_mixed',
   'diamond',
-  'emerald',
-  'platinum',
-  'gold',
-  'silver',
-  'bronze',
-  'iron',
+  'plat_emerald',
+  'iron_gold',
+  'all',
+  'unknown',
 ];
 const NICHE_LIMIT = 100; // cap the niche list so a thin meta's long tail stays bounded
 // A 3★ above this cost is variance, not a win condition, so it never earns a
@@ -868,4 +873,49 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
   }
 
   return { selection, options, bucketTotal, groups, ranked, niche, nicheAvailable };
+}
+// ── Read cache ────────────────────────────────────────────────────────────────
+//
+// The tier list is a pure function of the derived tables, and those only change
+// when the pipeline runs (every SCHED_PIPELINE_MIN, default 30 min). Recomputing
+// it per request cost a measured 0.9-1.6 s — a combos probe, a group-by over
+// every comp_stats row in the bucket, a 27 k-row member fetch, and the example
+// board aggregation — against a pool of 10 connections, so ~10 concurrent
+// visitors saturated it.
+//
+// TIME-BASED, not tag-based, on purpose: the pipeline runs in a SEPARATE Node
+// process (npm run worker), and revalidateTag() only reaches the Next runtime's
+// cache from inside it. Wiring push invalidation would mean the worker calling
+// an authenticated revalidate route — worth doing later, but a TTL well under
+// the pipeline cadence gets almost all of the benefit for none of the moving
+// parts. The 'comps' tag is declared anyway so that route can be added without
+// touching these call sites.
+//
+// The uncached functions stay exported: scripts/_tier-smoke.ts and the merge
+// tooling want a direct read, and unstable_cache needs a request context.
+
+const COMPS_CACHE_TTL = numEnv(process.env.COMPS_CACHE_TTL_S, 300);
+
+// Arguments are flattened to primitives so the cache key is deterministic —
+// passing the query object would key {} and {patchId: undefined} separately.
+const cachedTierList = unstable_cache(
+  (
+    patchId: number | null,
+    region: string | null,
+    rankBucket: string | null,
+    niche: boolean,
+  ): Promise<TierListVM> =>
+    getTierList({
+      patchId: patchId ?? undefined,
+      region: region ?? undefined,
+      rankBucket: rankBucket ?? undefined,
+      niche,
+    }),
+  ['comps:tier-list'],
+  { revalidate: COMPS_CACHE_TTL, tags: ['comps'] },
+);
+
+/** Cached `getTierList`. Use this from pages; the uncached one from scripts. */
+export function getTierListCached(q: TierListQuery = {}): Promise<TierListVM> {
+  return cachedTierList(q.patchId ?? null, q.region ?? null, q.rankBucket ?? null, !!q.niche);
 }

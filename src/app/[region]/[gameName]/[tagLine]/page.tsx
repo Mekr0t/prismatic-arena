@@ -4,6 +4,8 @@ import { getPlayerProfile, ProfileNotFoundError, type PlayerProfile } from '@/se
 import { getCatalog } from '@/server/static-data';
 import { buildProfileVM } from '@/server/view-models';
 import ProfileContent from '@/components/ProfileContent';
+import { RateLimited } from '@/components/RateLimited';
+import { limitRiotRead } from '@/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +20,16 @@ export default async function ProfilePage({
   const name = decodeURIComponent(gameName).trim();
   const tag = decodeURIComponent(tagLine).trim();
   if (!name || name.length > 16 || !tag || tag.length > 5) notFound();
+
+  // A cold profile fans out to ~23 Riot calls; throttle before spending them.
+  const limit = await limitRiotRead('profile');
+  if (!limit.ok) {
+    return (
+      <main className="page">
+        <RateLimited retryAfter={limit.retryAfter} />
+      </main>
+    );
+  }
 
   let profile: PlayerProfile;
   try {

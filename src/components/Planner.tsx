@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useGameData } from '@/lib/game-data';
+import { useGameData, useEntityTrigger } from '@/lib/game-data';
 import {
   type PlannerData,
   type PlannerUnit,
@@ -18,6 +18,13 @@ import {
 } from '@/lib/planner/core';
 
 const COST_CLASS = (cost: number) => `c${Math.min(Math.max(cost, 0), 5)}`;
+
+/** An item icon on a board cell. `stopPropagation` keeps clicks and hovers off
+ *  the sibling hex cell, which has its own select action and tooltip. */
+function HexItemIcon({ itemId, name, iconUrl }: { itemId: string; name: string; iconUrl: string }) {
+  const trigger = useEntityTrigger({ type: 'item', id: itemId, name, stopPropagation: true });
+  return <img className="hex-item-icon" src={iconUrl} alt={name} {...trigger} />;
+}
 
 export default function Planner({ data }: { data: PlannerData }) {
   const unitsById = useMemo(() => new Map(data.units.map((u) => [u.id, u])), [data.units]);
@@ -250,17 +257,35 @@ export default function Planner({ data }: { data: PlannerData }) {
                   const unit = cell ? unitsById.get(cell.unitId) : null;
                   return (
                     <div key={index} className="hexcell-wrap">
+                      {/* Board cells are selectable, so they take the ARIA button
+                          pattern: role + tab stop + Enter/Space, with aria-pressed
+                          carrying the selection that the `sel` class shows
+                          visually. Drag-and-drop stays mouse-only — the
+                          click-to-select then pick flow is the keyboard path. */}
                       <div
                         className={`hexcell ${cell ? 'filled' : 'empty'} ${
                           unit ? COST_CLASS(unit.cost) : ''
                         } ${selected === index ? 'sel' : ''}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={selected === index}
+                        aria-label={
+                          unit ? `${unit.name}, board cell ${index + 1}` : `Empty board cell ${index + 1}`
+                        }
                         onClick={() => setSelected(cell ? index : null)}
+                        onKeyDown={(e) => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return;
+                          e.preventDefault();
+                          setSelected(cell ? index : null);
+                        }}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => onCellDrop(e, index)}
                         draggable={!!cell}
                         onDragStart={(e) => e.dataTransfer.setData('text/plain', `move:${index}`)}
                         onMouseEnter={unit ? (e) => showTooltip(e, 'unit', cell!.unitId, unit.name) : undefined}
                         onMouseLeave={unit ? hideTooltip : undefined}
+                        onFocus={unit ? (e) => showTooltip(e, 'unit', cell!.unitId, unit.name) : undefined}
+                        onBlur={unit ? hideTooltip : undefined}
                       >
                         {unit && (
                           <span
@@ -278,16 +303,7 @@ export default function Planner({ data }: { data: PlannerData }) {
                           {cell.items.map((id, k) => {
                             const it = itemsById.get(id);
                             return it?.iconUrl ? (
-                              <img
-                                key={k}
-                                className="hex-item-icon"
-                                src={it.iconUrl}
-                                alt={it.name}
-                                style={{ cursor: 'pointer' }}
-                                onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, 'item', id, it.name); }}
-                                onMouseLeave={hideTooltip}
-                                onClick={(e) => { e.stopPropagation(); openModal('item', id, it.name); }}
-                              />
+                              <HexItemIcon key={k} itemId={id} name={it.name} iconUrl={it.iconUrl} />
                             ) : (
                               <i key={k} title={it?.name} />
                             );
@@ -372,8 +388,40 @@ export default function Planner({ data }: { data: PlannerData }) {
 }
 
 // ── active traits ────────────────────────────────────────────
+/** One trait chip in the planner panel. A component so it can use the trigger
+ *  hook (hooks can't be called from a `.map` callback). */
+function PlannerTraitChip({
+  trait,
+  className,
+  showNextAt,
+}: {
+  trait: ReturnType<typeof computeActiveTraits>[number];
+  className: string;
+  /** Inactive chips also show the next breakpoint, e.g. "2/4". */
+  showNextAt?: boolean;
+}) {
+  const nextAt = showNextAt && trait.nextAt ? `/${trait.nextAt}` : '';
+  const trigger = useEntityTrigger({
+    type: 'trait',
+    id: trait.id,
+    name: trait.name,
+    label: nextAt
+      ? `${trait.name}, ${trait.count} of ${trait.nextAt} units`
+      : `${trait.name}, ${trait.count} units`,
+  });
+  return (
+    <span className={className} {...trigger}>
+      {trait.iconUrl ? <img className="chipimg" src={trait.iconUrl} alt="" /> : <span className="dot" />}
+      {trait.name}
+      <span className="n">
+        {trait.count}
+        {nextAt}
+      </span>
+    </span>
+  );
+}
+
 function TraitPanel({ traits }: { traits: ReturnType<typeof computeActiveTraits> }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
   const active = traits.filter((t) => t.style > 0);
   const inactive = traits.filter((t) => t.style === 0);
   return (
@@ -384,35 +432,14 @@ function TraitPanel({ traits }: { traits: ReturnType<typeof computeActiveTraits>
       ) : (
         <div className="trait-list">
           {active.map((t) => (
-            <span
-              className={`chip ${t.unique ? 'unique' : `s${t.style}`}`}
+            <PlannerTraitChip
               key={t.id}
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={(e) => showTooltip(e, 'trait', t.id, t.name)}
-              onMouseLeave={hideTooltip}
-              onClick={() => openModal('trait', t.id, t.name)}
-            >
-              {t.iconUrl ? <img className="chipimg" src={t.iconUrl} alt="" /> : <span className="dot" />}
-              {t.name}
-              <span className="n">{t.count}</span>
-            </span>
+              trait={t}
+              className={`chip ${t.unique ? 'unique' : `s${t.style}`}`}
+            />
           ))}
           {inactive.map((t) => (
-            <span
-              className="chip"
-              key={t.id}
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={(e) => showTooltip(e, 'trait', t.id, t.name)}
-              onMouseLeave={hideTooltip}
-              onClick={() => openModal('trait', t.id, t.name)}
-            >
-              {t.iconUrl ? <img className="chipimg" src={t.iconUrl} alt="" /> : <span className="dot" />}
-              {t.name}
-              <span className="n">
-                {t.count}
-                {t.nextAt ? `/${t.nextAt}` : ''}
-              </span>
-            </span>
+            <PlannerTraitChip key={t.id} trait={t} className="chip" showNextAt />
           ))}
         </div>
       )}
@@ -452,12 +479,17 @@ function UnitPicker({ units, onPick }: { units: PlannerUnit[]; onPick: (id: stri
         {filtered.map((u) => (
           <button
             key={u.id}
+            type="button"
             className={`up-cell ${COST_CLASS(u.cost)}`}
             onClick={() => onPick(u.id)}
             draggable
             onDragStart={(e) => e.dataTransfer.setData('text/plain', `new:${u.id}`)}
             onMouseEnter={(e) => showTooltip(e, 'unit', u.id, u.name)}
             onMouseLeave={hideTooltip}
+            // Already a real button, so the pick action was reachable; the
+            // tooltip was not. Focus gets the same quick-tip as hover.
+            onFocus={(e) => showTooltip(e, 'unit', u.id, u.name)}
+            onBlur={hideTooltip}
             style={u.iconUrl ? { backgroundImage: `url(${u.iconUrl})` } : undefined}
           >
             {!u.iconUrl && <span className="up-letter">{u.name[0]}</span>}

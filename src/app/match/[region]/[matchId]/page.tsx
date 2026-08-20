@@ -3,8 +3,13 @@ import { notFound } from 'next/navigation';
 import { isPlatform } from '@/config/regions';
 import { getMatchDetail } from '@/server/match-service';
 import { PlacementBadge, BoardStrip } from '@/components/Board';
+import { RateLimited } from '@/components/RateLimited';
+import { limitRiotRead } from '@/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
+
+// e.g. "EUW1_7412345678" — platform prefix, underscore, digits.
+const MATCH_ID_RE = /^[A-Za-z0-9]{2,8}_[0-9]{1,24}$/;
 
 const QUEUE_LABELS: Record<number, string> = {
   1090: 'Normal',
@@ -44,7 +49,20 @@ export default async function MatchPage({
 
   const { puuid: highlight } = await searchParams;
 
-  const detail = await getMatchDetail(region, decodeURIComponent(matchId));
+  // Reject a malformed id before spending a Riot call on it.
+  const id = decodeURIComponent(matchId);
+  if (!MATCH_ID_RE.test(id)) notFound();
+
+  const limit = await limitRiotRead('match');
+  if (!limit.ok) {
+    return (
+      <main className="page">
+        <RateLimited retryAfter={limit.retryAfter} />
+      </main>
+    );
+  }
+
+  const detail = await getMatchDetail(region, id);
   if (!detail) notFound();
 
   const queue = QUEUE_LABELS[detail.queueId] ?? 'TFT';

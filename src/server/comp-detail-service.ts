@@ -16,6 +16,7 @@
 // All aggregations are scoped to the same (patch, region, bucket) as the stats
 // and to the ranked queue. Everything is derived on read; no new tables.
 
+import { unstable_cache } from 'next/cache';
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
 import { COMPONENT_ITEMS } from './item-filters';
@@ -640,4 +641,44 @@ export async function getCompDetail(
     builds,
     topBoards,
   };
+}
+
+// ── Read cache ────────────────────────────────────────────────────────────────
+// Same rationale and the same TTL knob as comps-service's tier-list cache: this
+// view is ~12 queries (measured 392 ms) over tables that only the pipeline
+// writes. Keyed on the full selection so each variant of each archetype caches
+// independently.
+
+const DETAIL_CACHE_TTL = num(process.env.COMPS_CACHE_TTL_S, 300);
+
+const cachedCompDetail = unstable_cache(
+  (
+    groupKey: string,
+    patchId: number | null,
+    region: string | null,
+    rankBucket: string | null,
+    variant: string | null,
+  ): Promise<CompDetailVM | null> =>
+    getCompDetail(groupKey, {
+      patchId: patchId ?? undefined,
+      region: region ?? undefined,
+      rankBucket: rankBucket ?? undefined,
+      variant: variant ?? undefined,
+    }),
+  ['comps:detail'],
+  { revalidate: DETAIL_CACHE_TTL, tags: ['comps'] },
+);
+
+/** Cached `getCompDetail`. Use this from pages; the uncached one from scripts. */
+export function getCompDetailCached(
+  groupKey: string,
+  q: TierListQuery = {},
+): Promise<CompDetailVM | null> {
+  return cachedCompDetail(
+    groupKey,
+    q.patchId ?? null,
+    q.region ?? null,
+    q.rankBucket ?? null,
+    q.variant ?? null,
+  );
 }
