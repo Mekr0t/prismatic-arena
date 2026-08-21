@@ -30,6 +30,14 @@ export enum Priority {
 const MAX_RETRIES = 3;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Unwrap undici's `TypeError: fetch failed` to the real transport reason. The
+ *  outer message is always the same string, so without this every network
+ *  failure — DNS, reset, timeout — is indistinguishable in the logs. */
+function transportCause(err: unknown): string {
+  const e = err as { message?: string; cause?: { code?: string; message?: string } };
+  return e?.cause?.code ?? e?.cause?.message ?? e?.message ?? 'unknown';
+}
+
 // One app-rate-limit budget per host. We key by the region identifier of the
 // host being called: regional routes (americas/europe/...) for account+match,
 // platform ids (na1/euw1/...) for summoner+league. Each host is metered
@@ -53,6 +61,35 @@ export class RiotApiError extends Error {
     this.name = 'RiotApiError';
   }
 }
+
+// ── Path-segment safety ─────────────────────────────────────────────────────
+// Every id below is interpolated into an upstream URL that carries our API key.
+// Un-encoded segments let a caller-supplied value inject path traversal ("../")
+// or a query string ("?"), which the WHATWG URL parser then normalizes into a
+// DIFFERENT Riot endpoint — turning this client into an authenticated proxy for
+// whoever controls the input. encodeURIComponent() is the fix (it escapes "/",
+// "?" and "#", so ".." can no longer traverse); the regex guards are
+// defence-in-depth so a malformed id fails here rather than burning a request,
+// and so a future caller that forgets to validate at the route boundary is
+// still safe. They are deliberately permissive about length — Riot has changed
+// id widths before, and rejecting a valid id is a worse failure than allowing
+// an odd-looking one that encodeURIComponent has already neutralized.
+
+/** e.g. "EUW1_7412345678" — platform prefix, underscore, digits. */
+const MATCH_ID_RE = /^[A-Za-z0-9]{2,8}_[0-9]{1,24}$/;
+/** Riot PUUIDs are base64url-ish. Also covers the literal "BOT" participant. */
+const ID_TOKEN_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function safeSegment(value: string, re: RegExp, label: string): string {
+  if (typeof value !== 'string' || !re.test(value)) {
+    throw new RiotApiError(400, `Malformed ${label}`);
+  }
+  return encodeURIComponent(value);
+}
+
+const matchIdSeg = (v: string) => safeSegment(v, MATCH_ID_RE, 'match id');
+const puuidSeg = (v: string) => safeSegment(v, ID_TOKEN_RE, 'puuid');
+const summonerIdSeg = (v: string) => safeSegment(v, ID_TOKEN_RE, 'summoner id');
 
 // ── API-usage telemetry (M3 ops panel) ──────────────────────────────────────
 // Every real HTTP call to Riot is counted into a per-minute bucket keyed by
@@ -117,10 +154,39 @@ async function request<T>(opts: RequestOpts): Promise<T | null> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     await limiter.acquire(priority);
 
-    const res = await fetch(url, {
-      headers: { 'X-Riot-Token': apiKey },
-      cache: 'no-store', // our Redis layer owns caching, not fetch's
-    });
+    // TRANSPORT failures throw instead of returning a response: undici reports
+    // them as a bare TypeError('fetch failed') with the real reason on .cause
+    // (ECONNRESET, ENOTFOUND, UND_ERR_CONNECT_TIMEOUT, EAI_AGAIN…). Left
+    // unhandled they escaped this loop entirely — the retry logic below only
+    // ever inspected res.status — and killed the whole calling job, discarding
+    // a 20-30 match batch because one connection dropped. They are retried on
+    // the same backoff as 429/5xx, and the cause is surfaced in the message so
+    // the next occurrence is diagnosable from the worker log rather than
+    // showing up as the word "fetch failed".
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { 'X-Riot-Token': apiKey },
+        cache: 'no-store', // our Redis layer owns caching, not fetch's
+      });
+    } catch (err) {
+      const reason = transportCause(err);
+      if (attempt < MAX_RETRIES) {
+        // Log the RECOVERED case too. Without this a retry that succeeds leaves
+        // no trace, so "no failures" can't be distinguished from "failing
+        // constantly but absorbed" — and the cause code is the only clue to
+        // whether this is DNS, connection churn, or upstream shedding load.
+        console.warn(
+          `[riot] transport ${reason} on ${methodLabel(path)} (attempt ${attempt + 1}/${MAX_RETRIES}), retrying`,
+        );
+        await sleep(Math.min(1000 * 2 ** attempt, 10_000));
+        continue;
+      }
+      throw new RiotApiError(
+        503,
+        `Riot API unreachable after ${MAX_RETRIES} retries (${reason}): ${url}`,
+      );
+    }
 
     // Count every real HTTP call (incl. 404s and each 429 retry) against usage.
     recordUsage(regionKey, path, res.status === 429);
@@ -189,7 +255,7 @@ export const riot = {
       const r = accountRoute(route);
       return request<AccountDto>({
         host: regionalHost(r),
-        path: `/riot/account/v1/accounts/by-puuid/${puuid}`,
+        path: `/riot/account/v1/accounts/by-puuid/${puuidSeg(puuid)}`,
         regionKey: r,
         priority,
         cacheTtl: CACHE_TTL.account,
@@ -202,7 +268,7 @@ export const riot = {
     byPuuid(platform: Platform, puuid: string, priority = Priority.USER) {
       return request<SummonerDto>({
         host: platformHost(platform),
-        path: `/tft/summoner/v1/summoners/by-puuid/${puuid}`,
+        path: `/tft/summoner/v1/summoners/by-puuid/${puuidSeg(puuid)}`,
         regionKey: platform,
         priority,
         cacheTtl: CACHE_TTL.summoner,
@@ -212,7 +278,7 @@ export const riot = {
     byId(platform: Platform, summonerId: string, priority = Priority.BATCH) {
       return request<SummonerDto>({
         host: platformHost(platform),
-        path: `/tft/summoner/v1/summoners/${summonerId}`,
+        path: `/tft/summoner/v1/summoners/${summonerIdSeg(summonerId)}`,
         regionKey: platform,
         priority,
         cacheTtl: CACHE_TTL.summoner,
@@ -225,7 +291,7 @@ export const riot = {
     async byPuuid(platform: Platform, puuid: string, priority = Priority.USER) {
       const data = await request<LeagueEntryDto[]>({
         host: platformHost(platform),
-        path: `/tft/league/v1/by-puuid/${puuid}`,
+        path: `/tft/league/v1/by-puuid/${puuidSeg(puuid)}`,
         regionKey: platform,
         priority,
         cacheTtl: CACHE_TTL.league,
@@ -236,7 +302,7 @@ export const riot = {
     async bySummoner(platform: Platform, summonerId: string, priority = Priority.USER) {
       const data = await request<LeagueEntryDto[]>({
         host: platformHost(platform),
-        path: `/tft/league/v1/entries/by-summoner/${summonerId}`,
+        path: `/tft/league/v1/entries/by-summoner/${summonerIdSeg(summonerId)}`,
         regionKey: platform,
         priority,
         cacheTtl: CACHE_TTL.league,
@@ -273,7 +339,7 @@ export const riot = {
       const since = startTime ? `&startTime=${Math.floor(startTime)}` : '';
       const data = await request<string[]>({
         host: regionalHost(route),
-        path: `/tft/match/v1/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}${since}`,
+        path: `/tft/match/v1/matches/by-puuid/${puuidSeg(puuid)}/ids?start=${Number(start)}&count=${Number(count)}${since}`,
         regionKey: route,
         priority,
         cacheTtl: CACHE_TTL.matchIds,
@@ -284,7 +350,7 @@ export const riot = {
     byId(route: RegionalRoute, matchId: string, priority = Priority.USER) {
       return request<MatchDto>({
         host: regionalHost(route),
-        path: `/tft/match/v1/matches/${matchId}`,
+        path: `/tft/match/v1/matches/${matchIdSeg(matchId)}`,
         regionKey: route,
         priority,
         cacheTtl: CACHE_TTL.matchDetail,

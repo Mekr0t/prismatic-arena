@@ -70,7 +70,10 @@ export async function getPlayerProfile(
   // the read path stops doing bulk inserts.
   await persistIdentity(platform, route, gameName, tagLine, puuid, summoner, ranked);
   const persisted = await Promise.allSettled(
-    matches.filter((m): m is MatchDto => m !== null).map(persistMatch),
+    // Wrapped, not point-free: persistMatch's second parameter is the rank
+    // bucket, and `.map(persistMatch)` would hand it the array index. The
+    // profile path has no crawl context, so these boards stay 'unknown'.
+    matches.filter((m): m is MatchDto => m !== null).map((m) => persistMatch(m)),
   );
   for (const r of persisted) {
     if (r.status === 'rejected') console.error('persistMatch failed:', r.reason);

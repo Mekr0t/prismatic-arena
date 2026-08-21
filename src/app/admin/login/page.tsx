@@ -7,6 +7,7 @@ export const metadata = { title: 'Admin — Sign in' };
 const ERRORS: Record<string, string> = {
   '1': 'Incorrect password.',
   config: 'Admin login isn’t configured. Set ADMIN_PASSWORD and ADMIN_SESSION_SECRET.',
+  rate: 'Too many attempts. Wait a few minutes and try again.',
 };
 
 export default async function AdminLoginPage({

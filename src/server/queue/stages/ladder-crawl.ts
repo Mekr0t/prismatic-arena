@@ -2,7 +2,7 @@ import { riot, Priority, routeForPlatform } from '@/lib/riot';
 import type { Platform } from '@/config/regions';
 import { query } from '@/lib/db';
 import { CRAWL } from '@/config/crawl';
-import { bucketForTier } from '@/config/rank-buckets';
+import { bucketForTier, tierInScope } from '@/config/rank-buckets';
 import { makeQueue, QUEUE } from '../queues';
 import type { JobContext } from '../job-tracking';
 import type { MatchFetchJob } from './match-fetch';
@@ -27,6 +27,14 @@ import type { MatchFetchJob } from './match-fetch';
 export interface LadderCrawlJob {
   platform: string;
 }
+
+/** Riot's queueType for the ranked TFT ladder — the entry whose tier we bucket by. */
+const RANKED_TFT = 'RANKED_TFT';
+
+/** How many candidates to pull per intended enqueue. Out-of-scope players are
+ *  skipped without consuming an enqueue slot, so without headroom a run full of
+ *  low-ELO accounts would enqueue nothing at all. */
+const SEED_OVERSELECT = 4;
 
 const APEX_TIERS = ['challenger', 'grandmaster', 'master'] as const;
 type ApexTier = (typeof APEX_TIERS)[number];
@@ -72,14 +80,19 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
   const matchFetchQueue = makeQueue(QUEUE.matchFetch);
 
   const recrawlHours = envInt('CRAWL_RECRAWL_HOURS', 12);
-  // rank_bucket is vestigial until R8 (match_participants.rank_bucket rides the
-  // 0009 column default); the job carries it but match-fetch doesn't persist it.
-  const bucket = bucketForTier(CRAWL.tiers.find(isApexTier) ?? 'challenger');
+  // A cached tier is trusted for this long before it's re-resolved. Players do
+  // move between tiers, but not on the timescale of a crawl pass, and every
+  // re-check costs a Riot call.
+  const tierTtlHours = envInt('CRAWL_TIER_TTL_HOURS', 72);
 
   try {
     // 1) DISCOVER — register apex ladder puuids as uncrawled candidates. One
     //    cached Riot call per tier; no per-player fetches. Entries missing a
     //    puuid are skipped (they'll be discovered as match participants anyway).
+    //
+    //    The ladder tells us these players' tier for FREE, so it is recorded
+    //    here — every account seeded this way skips the per-player league call
+    //    the drain would otherwise spend on it.
     for (const tier of CRAWL.tiers) {
       if (!isApexTier(tier)) continue;
       const list = await riot.league.apex(platform, tier, Priority.BATCH);
@@ -88,10 +101,11 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
         .filter((p): p is string => typeof p === 'string' && p.length > 0);
       if (puuids.length > 0) {
         await query(
-          `INSERT INTO accounts (puuid, routing)
-           SELECT unnest($1::text[]), $2
-           ON CONFLICT (puuid) DO NOTHING`,
-          [puuids, route],
+          `INSERT INTO accounts (puuid, routing, tier, tier_checked_at)
+           SELECT unnest($1::text[]), $2, $3, now()
+           ON CONFLICT (puuid) DO UPDATE
+             SET tier = EXCLUDED.tier, tier_checked_at = now()`,
+          [puuids, route, tier.toUpperCase()],
         );
       }
     }
@@ -107,22 +121,72 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
     // 2) DRAIN — never-crawled first (NULLS FIRST), then anything past the
     //    re-crawl window. This works down the discovered backlog instead of
     //    re-seeding the ladder top. Index: accounts (last_crawled_at NULLS FIRST).
-    const seeds = await query<{ puuid: string }>(
-      `SELECT puuid
+    // Over-select: out-of-scope candidates are skipped without consuming an
+    // enqueue slot, so the drain needs more rows than it intends to enqueue or
+    // a run full of low-ELO accounts would do nothing.
+    // ORDERING MATTERS AS MUCH AS THE GATE. The frontier is ~280 k accounts
+    // snowballed from match participants, of which only a few hundred are
+    // actually apex — so draining it oldest-first would spend a tier lookup on
+    // candidate after candidate and enqueue almost nothing. Candidates whose
+    // CACHED tier is already in scope (everyone seeded from the apex ladder,
+    // where the tier came free) sort first; unknown-tier accounts next, so the
+    // frontier still gets explored; already-checked out-of-scope players sort
+    // last and fall off the LIMIT.
+    const scopeUpper = CRAWL.tiers.map((t) => t.toUpperCase());
+    const seeds = await query<{ puuid: string; tier: string | null; tier_fresh: boolean }>(
+      `SELECT puuid, tier,
+              (tier_checked_at IS NOT NULL
+               AND tier_checked_at > now() - make_interval(hours => $3)) AS tier_fresh
          FROM accounts
         WHERE last_crawled_at IS NULL
            OR last_crawled_at < now() - make_interval(hours => $2)
-        ORDER BY last_crawled_at ASC NULLS FIRST
+        ORDER BY (tier IS NOT NULL AND upper(tier) = ANY($4::text[])) DESC,
+                 (tier IS NULL) DESC,
+                 last_crawled_at ASC NULLS FIRST
         LIMIT $1`,
-      [CRAWL.maxPuuidsPerRun, recrawlHours],
+      [CRAWL.maxPuuidsPerRun * SEED_OVERSELECT, recrawlHours, tierTtlHours, scopeUpper],
     );
 
     let enqueued = 0;
     let fetchBudget = CRAWL.maxMatchFetchesPerPass;
+    let skippedOutOfScope = 0;
+    let tierLookups = 0;
     const crawled: string[] = [];
 
-    for (const { puuid } of seeds) {
+    for (const seed of seeds) {
+      const { puuid } = seed;
       if (enqueued >= CRAWL.maxPuuidsPerRun || fetchBudget <= 0) break;
+
+      // RANK GATE. One league.byPuuid call per candidate — against the ~20 match
+      // calls that candidate is about to cost, roughly 5 % overhead — resolves
+      // the tier that buckets every board of every match we pull for them. A
+      // player outside CRAWL_TIERS is marked crawled and skipped WITHOUT
+      // spending the match budget, which is what keeps the frontier from
+      // snowballing down the ladder while every board claims to be Challenger.
+      let tier = seed.tier;
+      if (!seed.tier_fresh) {
+        try {
+          const entries = await riot.league.byPuuid(platform, puuid, Priority.BATCH);
+          tier = entries.find((e) => e.queueType === RANKED_TFT)?.tier ?? null;
+          tierLookups += 1;
+        } catch (err) {
+          // Treat an unresolvable tier as out of scope for this pass rather than
+          // guessing: a wrong bucket is worse than a missing board.
+          console.warn(`[ladder-crawl] tier lookup failed for ${puuid}: ${(err as Error).message}`);
+          crawled.push(puuid);
+          continue;
+        }
+        await query(
+          `UPDATE accounts SET tier = $2, tier_checked_at = now() WHERE puuid = $1`,
+          [puuid, tier],
+        );
+      }
+
+      if (!tierInScope(tier, CRAWL.tiers)) {
+        crawled.push(puuid); // don't re-check until the recrawl window lapses
+        skippedOutOfScope += 1;
+        continue;
+      }
 
       const count = Math.min(CRAWL.matchIdsPerPuuid, fetchBudget);
       let matchIds: string[];
@@ -149,7 +213,10 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       crawled.push(puuid);
       if (matchIds.length === 0) continue;
 
-      const job: MatchFetchJob = { platform, puuid, matchIds, bucket };
+      // The bucket now travels PER SEED, from that player's resolved tier —
+      // it used to be one constant for the whole pass, derived from config
+      // rather than from data.
+      const job: MatchFetchJob = { platform, puuid, matchIds, bucket: bucketForTier(tier) };
       await matchFetchQueue.add('fetch', job, {
         jobId: `mf:${platform}:${puuid}`,
         removeOnComplete: true, // free the id so a later re-crawl can re-enqueue
@@ -169,7 +236,8 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
     }
 
     console.log(
-      `[ladder-crawl] frontier drain — ${seeds.length} candidates, enqueued ${enqueued}, budget left ${fetchBudget}`,
+      `[ladder-crawl] frontier drain — ${seeds.length} candidates, enqueued ${enqueued}, ` +
+        `tier lookups ${tierLookups}, out-of-scope skipped ${skippedOutOfScope}, budget left ${fetchBudget}`,
     );
   } finally {
     await matchFetchQueue.close();

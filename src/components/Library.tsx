@@ -31,7 +31,10 @@ export default function Library({ data }: { data: LibraryData }) {
   const [tooltip, setTooltip] = useState<TooltipState>(null);
 
   // Rich trait hover: full effect + all breakpoints (not just a first line).
-  const showTraitTooltip = useCallback((e: React.MouseEvent, trait: LibTrait | undefined) => {
+  // Takes a SyntheticEvent, not a MouseEvent, so focus can open it too — this
+  // tooltip is the ONLY way to read a trait's breakpoints from the unit detail
+  // panel, and hover-only made it unreachable by keyboard (WCAG 1.4.13).
+  const showTraitTooltip = useCallback((e: React.SyntheticEvent, trait: LibTrait | undefined) => {
     if (!trait) return;
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.min(r.left, window.innerWidth - 360);
@@ -271,8 +274,11 @@ export default function Library({ data }: { data: LibraryData }) {
                         const t = traitById.get(tid);
                         return (
                           <span key={tid} className="chip"
+                            tabIndex={0}
                             onMouseEnter={(e) => showTraitTooltip(e, t)}
                             onMouseLeave={hideTooltip}
+                            onFocus={(e) => showTraitTooltip(e, t)}
+                            onBlur={hideTooltip}
                           >
                             {t?.iconUrl && <img src={t.iconUrl} className="chipimg" alt="" />}
                             {t?.name ?? tid}
@@ -393,6 +399,7 @@ export default function Library({ data }: { data: LibraryData }) {
 
       {tooltip && (
         <div
+          role="tooltip"
           className={`lib-tooltip${tooltip.trait ? ' gd-tt-trait' : ''}`}
           style={{ left: tooltip.x, top: tooltip.y }}
         >

@@ -29,25 +29,41 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   let skipped = 0;
   const discovered = new Set<string>();
 
+  // One match id must not sink the batch. The client already retries transport
+  // failures, so anything still throwing here is either persistent (a bad id, a
+  // sustained network outage) or an expired key — none of which is a reason to
+  // discard the other 20-odd ids in this job, which is what an unguarded loop
+  // did. Failures are counted; the job only fails if EVERY id failed, so a real
+  // outage still surfaces as a failed job rather than a silent no-op.
+  const errors: string[] = [];
+
   for (const matchId of data.matchIds) {
-    // Dedup boundary: a match we already have skips the Riot fetch outright.
-    const existing = await query('SELECT 1 FROM matches WHERE match_id = $1', [matchId]);
-    if (existing.length > 0) {
-      skipped += 1;
-      continue;
-    }
+    try {
+      // Dedup boundary: a match we already have skips the Riot fetch outright.
+      const existing = await query('SELECT 1 FROM matches WHERE match_id = $1', [matchId]);
+      if (existing.length > 0) {
+        skipped += 1;
+        continue;
+      }
 
-    const match = await riot.match.byId(route, matchId, Priority.BATCH);
-    if (!match) continue;
+      const match = await riot.match.byId(route, matchId, Priority.BATCH);
+      if (!match) continue;
 
-    await persistMatch(match); // idempotent — re-checks existence for race safety
-    // AI-filled lobbies report bot participants with the literal puuid "BOT" —
-    // not a real account, and Riot 400s any match/league call made with it.
-    for (const p of match.info.participants) {
-      if (p.puuid !== 'BOT') discovered.add(p.puuid);
+      // The seed player's tier buckets every board in the match (TFT lobbies are
+      // rank-homogeneous). This is what finally makes rank_bucket real instead
+      // of the 0009 column default.
+      await persistMatch(match, data.bucket); // idempotent — re-checks existence
+      // AI-filled lobbies report bot participants with the literal puuid "BOT" —
+      // not a real account, and Riot 400s any match/league call made with it.
+      for (const p of match.info.participants) {
+        if (p.puuid !== 'BOT') discovered.add(p.puuid);
+      }
+      stored += 1;
+      ctx.setItems(stored);
+    } catch (err) {
+      errors.push(`${matchId}: ${(err as Error).message}`);
+      console.warn(`[match-fetch] skipping ${matchId}: ${(err as Error).message}`);
     }
-    stored += 1;
-    ctx.setItems(stored);
   }
 
   // Expand the frontier: every player seen here becomes an uncrawled candidate.
@@ -62,6 +78,16 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   }
 
   console.log(
-    `[match-fetch] ${data.puuid}: stored=${stored} skipped=${skipped} total=${data.matchIds.length} discovered=${discovered.size}`,
+    `[match-fetch] ${data.puuid}: stored=${stored} skipped=${skipped} failed=${errors.length} ` +
+      `total=${data.matchIds.length} discovered=${discovered.size}`,
   );
+
+  // Everything failed — that's an outage or a dead key, not a batch of bad ids.
+  // Throw so BullMQ retries and ingestion_jobs records it, instead of reporting
+  // a successful pass that stored nothing.
+  if (errors.length > 0 && stored === 0 && skipped === 0) {
+    throw new Error(
+      `all ${errors.length} match fetches failed — first: ${errors[0]}`,
+    );
+  }
 }

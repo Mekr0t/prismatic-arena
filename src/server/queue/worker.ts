@@ -11,6 +11,7 @@ import { runRollup, type RollupJob } from './stages/rollup';
 import { runTrendTier, type TrendTierJob } from './stages/trend-tier';
 import { runMerge, type MergeJob } from './stages/merge';
 import { registerSchedules, clearSchedules } from './scheduler';
+import { advanceChain, closeChain, CHAIN_ENABLED } from './chain';
 
 // Worker process. Each stage runs here as its own BullMQ worker in one process
 // (the "one process, split by stage" shape) so pulling any onto its own machine
@@ -30,6 +31,11 @@ import { registerSchedules, clearSchedules } from './scheduler';
 //   RUN_TREND_TIER=1     one trend-tier pass
 //   RUN_SCHEDULER=1      register repeatable schedules and self-drive (leave running)
 //   SCHED_CLEAR=1        remove the repeatable schedules and exit
+//
+// PIPELINE CHAIN: cluster → rollup → merge → trend-tier advance automatically on
+// success (see ./chain.ts), so the scheduler only kicks the head. A RUN_CLUSTER=1
+// trigger therefore runs the whole derived-stats pipeline too. Set
+// PIPELINE_CHAIN=false to isolate a single stage while debugging.
 
 // Long-running stages can exceed BullMQ's default 30 s lock duration.
 // 5 minutes covers the largest expected sweep; lock is renewed automatically
@@ -104,19 +110,28 @@ matchWorker.on('failed', (job, err) =>
 );
 matchWorker.on('error', (err) => console.error('[match-fetch] error:', err));
 
-clusterWorker.on('completed', (job) => console.log(`[cluster] completed: ${job.id}`));
+clusterWorker.on('completed', (job) => {
+  console.log(`[cluster] completed: ${job.id}`);
+  void advanceChain(QUEUE.cluster, job.data?.setNumber);
+});
 clusterWorker.on('failed', (job, err) =>
   console.log(`[cluster] failed: ${job?.id} — ${err.message}`),
 );
 clusterWorker.on('error', (err) => console.error('[cluster] error:', err));
 
-rollupWorker.on('completed', (job) => console.log(`[rollup] completed: ${job.id}`));
+rollupWorker.on('completed', (job) => {
+  console.log(`[rollup] completed: ${job.id}`);
+  void advanceChain(QUEUE.rollup, job.data?.setNumber);
+});
 rollupWorker.on('failed', (job, err) =>
   console.log(`[rollup] failed: ${job?.id} — ${err.message}`),
 );
 rollupWorker.on('error', (err) => console.error('[rollup] error:', err));
 
-mergeWorker.on('completed', (job) => console.log(`[merge] completed: ${job.id}`));
+mergeWorker.on('completed', (job) => {
+  console.log(`[merge] completed: ${job.id}`);
+  void advanceChain(QUEUE.merge, job.data?.setNumber);
+});
 mergeWorker.on('failed', (job, err) =>
   console.log(`[merge] failed: ${job?.id} — ${err.message}`),
 );
@@ -127,6 +142,25 @@ trendTierWorker.on('failed', (job, err) =>
   console.log(`[trend-tier] failed: ${job?.id} — ${err.message}`),
 );
 trendTierWorker.on('error', (err) => console.error('[trend-tier] error:', err));
+
+// The derived stages advance from cluster on their own (./chain.ts), so booting
+// with RUN_ROLLUP / RUN_MERGE / RUN_TREND_TIER while chaining is enabled starts
+// EXTRA passes mid-pipeline that run concurrently with the real one — which is
+// the stage overlap the chain exists to remove (observed 2026-08-18: cluster,
+// rollup, merge and trend-tier all starting in the same second at boot, because
+// all four flags were set). Downstream triggers are therefore ignored unless
+// chaining is off, and every boot trigger uses a stable jobId so repeated
+// restarts can't stack passes.
+const DOWNSTREAM_FLAGS = ['RUN_ROLLUP', 'RUN_MERGE', 'RUN_TREND_TIER'] as const;
+const activeDownstream = DOWNSTREAM_FLAGS.filter((f) => process.env[f] === '1');
+if (CHAIN_ENABLED && activeDownstream.length > 0) {
+  console.warn(
+    `[worker] ignoring ${activeDownstream.join(', ')} — the chain advances these from cluster. ` +
+      'Use RUN_SCHEDULER=1 alone, or set PIPELINE_CHAIN=false to drive a single stage.',
+  );
+}
+/** True when a mid-pipeline stage may be kicked directly (i.e. chaining is off). */
+const allowDownstreamBoot = !CHAIN_ENABLED;
 
 // Remove the repeatable schedules and exit. Run with: SCHED_CLEAR=1 npm run worker
 if (process.env.SCHED_CLEAR === '1') {
@@ -148,7 +182,10 @@ if (process.env.RUN_SCHEDULER === '1') {
 // run idle as a consumer. Run one pass with: RUN_CRAWL=1 npm run worker
 if (process.env.RUN_CRAWL === '1') {
   const q = makeQueue(QUEUE.ladderCrawl);
-  q.add('crawl', { platform: CRAWL.platform } satisfies LadderCrawlJob)
+  q.add('crawl', { platform: CRAWL.platform } satisfies LadderCrawlJob, {
+    jobId: 'boot-crawl',
+    removeOnComplete: true,
+  })
     .then(() => q.close())
     .then(() => console.log(`[worker] enqueued a ladder-crawl pass for ${CRAWL.platform}`))
     .catch((e) => console.error('[worker] crawl enqueue failed:', e));
@@ -156,10 +193,23 @@ if (process.env.RUN_CRAWL === '1') {
 
 // Kick a single cluster pass on boot, behind its own flag. All sets by default;
 // scope to one with CLUSTER_SET. Run with: RUN_CLUSTER=1 npm run worker
+//
+// REDUNDANT WITH RUN_SCHEDULER: registering the scheduler fires its first run
+// immediately, so booting with both flags enqueues TWO cluster jobs at the same
+// instant — and now that cluster is the head of a chain, that starts two
+// overlapping pipeline passes (pass B's rollup running against pass A's
+// half-finished cluster, which is the interleaving the chain exists to remove).
+// The stable jobId makes the boot trigger idempotent so repeated boots can't
+// stack passes; it still cannot dedupe against the scheduler's own `repeat:` id,
+// so prefer RUN_SCHEDULER alone for normal operation and RUN_CLUSTER only for a
+// one-off pass on a worker with no schedules registered.
 if (process.env.RUN_CLUSTER === '1') {
   const q = makeQueue(QUEUE.cluster);
   const setNumber = process.env.CLUSTER_SET ? Number(process.env.CLUSTER_SET) : undefined;
-  q.add('cluster', { setNumber } satisfies ClusterJob)
+  q.add('cluster', { setNumber } satisfies ClusterJob, {
+    jobId: 'boot-cluster',
+    removeOnComplete: true,
+  })
     .then(() => q.close())
     .then(() =>
       console.log(
@@ -171,9 +221,9 @@ if (process.env.RUN_CLUSTER === '1') {
 
 // Kick a single rollup pass on boot, behind its own flag. Run cluster first.
 // Run with: RUN_ROLLUP=1 npm run worker
-if (process.env.RUN_ROLLUP === '1') {
+if (process.env.RUN_ROLLUP === '1' && allowDownstreamBoot) {
   const q = makeQueue(QUEUE.rollup);
-  q.add('rollup', {} satisfies RollupJob)
+  q.add('rollup', {} satisfies RollupJob, { jobId: 'boot-rollup', removeOnComplete: true })
     .then(() => q.close())
     .then(() => console.log('[worker] enqueued a rollup pass'))
     .catch((e) => console.error('[worker] rollup enqueue failed:', e));
@@ -181,9 +231,9 @@ if (process.env.RUN_ROLLUP === '1') {
 
 // Kick a single trend-tier pass on boot, behind its own flag. Run rollup first.
 // Run with: RUN_TREND_TIER=1 npm run worker
-if (process.env.RUN_TREND_TIER === '1') {
+if (process.env.RUN_TREND_TIER === '1' && allowDownstreamBoot) {
   const q = makeQueue(QUEUE.trendTier);
-  q.add('trend-tier', {} satisfies TrendTierJob)
+  q.add('trend-tier', {} satisfies TrendTierJob, { jobId: 'boot-trend-tier', removeOnComplete: true })
     .then(() => q.close())
     .then(() => console.log('[worker] enqueued a trend-tier pass'))
     .catch((e) => console.error('[worker] trend-tier enqueue failed:', e));
@@ -191,10 +241,10 @@ if (process.env.RUN_TREND_TIER === '1') {
 
 // Kick a single merge pass on boot, behind its own flag. Run cluster first.
 // Run with: RUN_MERGE=1 npm run worker
-if (process.env.RUN_MERGE === '1') {
+if (process.env.RUN_MERGE === '1' && allowDownstreamBoot) {
   const q = makeQueue(QUEUE.merge);
   const setNumber = process.env.MERGE_SET ? Number(process.env.MERGE_SET) : undefined;
-  q.add('merge', { setNumber } satisfies MergeJob)
+  q.add('merge', { setNumber } satisfies MergeJob, { jobId: 'boot-merge', removeOnComplete: true })
     .then(() => q.close())
     .then(() =>
       console.log(
@@ -213,11 +263,15 @@ async function shutdown(): Promise<void> {
     mergeWorker.close(),
     trendTierWorker.close(),
   ]);
+  await closeChain();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 console.log(
-  '[worker] up — ladder-crawl + match-fetch + cluster + rollup + merge + trend-tier workers running',
+  '[worker] up — ladder-crawl + match-fetch + cluster + rollup + merge + trend-tier workers running' +
+    (CHAIN_ENABLED
+      ? ' · chain: cluster → rollup → merge → trend-tier'
+      : ' · chain DISABLED (PIPELINE_CHAIN=false)'),
 );

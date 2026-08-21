@@ -9,6 +9,8 @@ import {
 } from '@/server/leaderboard-service';
 import type { LeaderboardTier } from '@/server/view-models';
 import RegionSelect from '@/components/RegionSelect';
+import { RateLimited } from '@/components/RateLimited';
+import { limitRiotRead } from '@/server/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +31,17 @@ export default async function LeaderboardPage({
     ? (sp.tier as LeaderboardTier)
     : 'challenger';
   const requestedPage = Math.max(1, Number.parseInt(sp.page ?? '1', 10) || 1);
+
+  // The ladder itself is cached ~30m, but an uncached page still resolves up to
+  // PAGE_SIZE names through Riot on a cold accounts table.
+  const limit = await limitRiotRead('leaderboard');
+  if (!limit.ok) {
+    return (
+      <main className="page">
+        <RateLimited retryAfter={limit.retryAfter} />
+      </main>
+    );
+  }
 
   const vm = await getLeaderboard(region, tier, requestedPage, PAGE_SIZE);
 

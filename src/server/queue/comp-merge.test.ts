@@ -131,6 +131,41 @@ test('damage-disjoint falls back to full sets: item drift within one line pools'
   assert.equal(label(res, a), label(res, b));
 });
 
+// ── Carry-overlap metric (Dice, not the overlap coefficient) ──────────────────
+
+test('a single shared carry against a wider set scores partially, not 1.0', () => {
+  // The cliff: carry agreement used to be |A∩B| / min(|A|,|B|). When
+  // getDomCarries' single-carry fallback fires, min(|A|,1) = 1, so sharing that
+  // one carry scored a perfect 1.0 — which ALSO cleared STRONG_CARRY_OVERLAP
+  // (0.75) and unlocked the jaccard + score slack. One unit flipped a comp from
+  // hard-fail to merge-with-relaxed-bars, with nothing in between.
+  //
+  // Dice (2·|A∩B| / (|A|+|B|)) gives 2·1/(1+3) = 0.5 here: still over the 0.34
+  // carry bar, but well under the slack bar, which is the whole point.
+  const one = P({ units: SHELL, carries: ['A'], boards: 40 });
+  const three = P({ units: SHELL, carries: ['A', 'B', 'C'], boards: 40 });
+  const r = debugCompare(one, three);
+  assert.ok(
+    r.carryOverlap > 0.34 && r.carryOverlap < 0.75,
+    `expected a partial score between the carry bar and the slack bar, got ${r.carryOverlap}`,
+  );
+});
+
+test('equal-sized carry sets are unaffected by the metric change', () => {
+  // Dice and the overlap coefficient agree whenever |A| = |B|, so every
+  // well-behaved case keeps its old score — only lopsided sets move.
+  const a = P({ units: SHELL, carries: ['A', 'B', 'C'], boards: 40 });
+  const b = P({ units: SHELL, carries: ['A', 'B', 'D'], boards: 40 });
+  const r = debugCompare(a, b);
+  assert.equal(Math.round(r.carryOverlap * 1000) / 1000, 0.667);
+});
+
+test('fully agreeing carry sets still score 1.0 and keep their slack', () => {
+  const a = P({ units: SHELL, carries: ['A', 'B'], boards: 40 });
+  const b = P({ units: SHELL, carries: ['A', 'B'], boards: 40 });
+  assert.equal(debugCompare(a, b).carryOverlap, 1);
+});
+
 // ── Trait-frame term ──────────────────────────────────────────────────────────
 
 test('a matching trait frame bridges flex-slot drift the unit score alone rejects', async () => {

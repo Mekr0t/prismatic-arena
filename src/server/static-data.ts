@@ -34,8 +34,19 @@ let loading: Promise<Loaded> | null = null;
 /** Current set number: the is_current patch's set, else the newest set with
  *  loaded units. Shared by library-data and planner-data. */
 export async function currentSet(): Promise<number> {
+  // Trust is_current ONLY when that set actually has a catalog. Rotating game
+  // modes replay old sets on the current client version, so a stray flag can
+  // land on a set we have no units for — and returning it here empties the
+  // catalog, the Library and the planner at once. patch.ts gates the writer;
+  // this is the reader-side backstop, so neither alone is a single point of
+  // failure.
   const current = await query<{ set_number: number }>(
-    `SELECT set_number FROM patches WHERE is_current = true ORDER BY set_number DESC LIMIT 1`,
+    `SELECT p.set_number
+       FROM patches p
+      WHERE p.is_current = true
+        AND EXISTS (SELECT 1 FROM units u WHERE u.set_number = p.set_number)
+      ORDER BY p.set_number DESC
+      LIMIT 1`,
   );
   if (current[0]) return current[0].set_number;
   const max = await query<{ max: number | null }>(`SELECT max(set_number)::int AS max FROM units`);

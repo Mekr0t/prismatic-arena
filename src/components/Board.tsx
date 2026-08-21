@@ -1,6 +1,6 @@
 'use client';
 
-import { useGameData } from '@/lib/game-data';
+import { useEntityTrigger } from '@/lib/game-data';
 import type { UnitVM, TraitVM, BoardVM, Bucket } from '@/server/view-models';
 
 export function PlacementBadge({
@@ -15,21 +15,29 @@ export function PlacementBadge({
   return <div className={`${variant === 'lobby' ? 'pl-hex' : 'hex'} ${bucket}`}>{placement}</div>;
 }
 
+/** One item icon on a unit tile. Separate component so it can use the trigger
+ *  hook; `stopPropagation` keeps a click here off the sibling unit tile. */
+function ItemIcon({ item }: { item: UnitVM['items'][number] }) {
+  const trigger = useEntityTrigger({
+    type: 'item',
+    id: item.itemId,
+    name: item.name,
+    stopPropagation: true,
+  });
+  return <img className="itemimg" src={item.iconUrl ?? ''} alt={item.name} {...trigger} />;
+}
+
 export function UnitTile({ unit }: { unit: UnitVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const trigger = useEntityTrigger({ type: 'unit', id: unit.characterId, name: unit.name });
   const stars = unit.star > 1 ? '★'.repeat(unit.star) : '★';
   return (
     <div className="unit">
-      <div className={`stars ${unit.star > 1 ? '' : 's0'}`}>{stars}</div>
-      <div
-        className={`tile c${unit.cost || 1}`}
-        style={{ cursor: 'pointer' }}
-        onMouseEnter={(e) => showTooltip(e, 'unit', unit.characterId, unit.name)}
-        onMouseLeave={hideTooltip}
-        onClick={() => openModal('unit', unit.characterId, unit.name)}
-      >
+      <div className={`stars ${unit.star > 1 ? '' : 's0'}`} aria-hidden>
+        {stars}
+      </div>
+      <div className={`tile c${unit.cost || 1}`} {...trigger}>
         {unit.iconUrl ? (
-          <img className="tileimg" src={unit.iconUrl} alt={unit.name} />
+          <img className="tileimg" src={unit.iconUrl} alt="" />
         ) : (
           <span>{unit.name}</span>
         )}
@@ -37,18 +45,9 @@ export function UnitTile({ unit }: { unit: UnitVM }) {
       <div className="items">
         {unit.items.slice(0, 3).map((it, i) =>
           it.iconUrl ? (
-            <img
-              key={i}
-              className="itemimg"
-              src={it.iconUrl}
-              alt={it.name}
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={(e) => { e.stopPropagation(); showTooltip(e, 'item', it.itemId, it.name); }}
-              onMouseLeave={hideTooltip}
-              onClick={(e) => { e.stopPropagation(); openModal('item', it.itemId, it.name); }}
-            />
+            <ItemIcon key={`${it.itemId}:${i}`} item={it} />
           ) : (
-            <i key={i} title={it.name} />
+            <i key={`${it.itemId}:${i}`} title={it.name} />
           ),
         )}
       </div>
@@ -57,15 +56,16 @@ export function UnitTile({ unit }: { unit: UnitVM }) {
 }
 
 export function TraitChip({ trait }: { trait: TraitVM }) {
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  // The visible content is an icon plus a bare count, so the accessible name has
+  // to be spelled out — "Dark Star, 4 units" rather than "4".
+  const trigger = useEntityTrigger({
+    type: 'trait',
+    id: trait.traitId,
+    name: trait.name,
+    label: `${trait.name}, ${trait.numUnits} units`,
+  });
   return (
-    <span
-      className={`chip ${trait.unique ? 'unique' : `s${trait.style}`}`}
-      style={{ cursor: 'pointer' }}
-      onMouseEnter={(e) => showTooltip(e, 'trait', trait.traitId, trait.name)}
-      onMouseLeave={hideTooltip}
-      onClick={() => openModal('trait', trait.traitId, trait.name)}
-    >
+    <span className={`chip ${trait.unique ? 'unique' : `s${trait.style}`}`} {...trigger}>
       {trait.iconUrl ? <img className="chipimg" src={trait.iconUrl} alt="" /> : <span className="dot" />}
       {trait.name} <span className="n">{trait.numUnits}</span>
     </span>

@@ -389,6 +389,30 @@ function weightedOverlap(
   };
 }
 
+/**
+ * Carry-set agreement, as a Dice coefficient: 2·|A∩B| / (|A|+|B|).
+ *
+ * This used to be the OVERLAP COEFFICIENT, |A∩B| / min(|A|,|B|), which has a
+ * pathological interaction with `getDomCarries`' single-carry fallback. When no
+ * carry clears CARRY_DOMINANT_RATE the archetype's dominant set collapses to one
+ * unit, so min(|A|,1) = 1 and the score became BINARY: share that one carry and
+ * you scored 1.0, don't and you scored 0.0. There was no middle. Worse, a 1.0
+ * also cleared STRONG_CARRY_OVERLAP, so a single shared unit simultaneously
+ * passed the carry guard AND unlocked the jaccard + score slack — one unit
+ * flipping a comp from hard-fail to merge-with-relaxed-bars.
+ *
+ * Dice degrades gracefully instead: one carry against three now scores 0.5, which
+ * still clears MIN_CARRY_OVERLAP (0.34) but sits well under the 0.75 slack bar.
+ * It is identical to the old metric whenever the two sets are the same size, so
+ * the well-behaved cases are unchanged — only the lopsided ones move.
+ */
+function diceOverlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return (2 * inter) / (a.size + b.size);
+}
+
 /** Σ of a comp's unit identity weights — the `wa` side of weightedOverlap,
  *  used by the candidate-prune bound. */
 function unitWeightSum(comp: CompProfile): number {
@@ -594,11 +618,9 @@ function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult
       // Akali/Jax — observed live 2026-07-17); a hard damage-disjoint veto
       // split such variants off their own line. Genuinely different lines
       // disagree on the full sets too and still fail here.
-      let full = 0;
-      for (const c of comp.carries) if (domCarries.has(c)) full++;
-      carryOverlap = full / Math.min(comp.carries.size, domCarries.size);
+      carryOverlap = diceOverlap(comp.carries, domCarries);
     } else {
-      carryOverlap = inter / Math.min(comp.damageCarries.size, domDamage.size);
+      carryOverlap = diceOverlap(comp.damageCarries, domDamage);
     }
   } else if (comp.carries.size === 0 && domCarries.size === 0) {
     carryOverlap = 1;
@@ -621,9 +643,7 @@ function compareToArchetype(comp: CompProfile, acc: ArchetypeAcc): CompareResult
     for (const c of comp.carries) if (repUnits.has(c)) present++;
     carryOverlap = present / comp.carries.size;
   } else {
-    let inter = 0;
-    for (const c of comp.carries) if (domCarries.has(c)) inter++;
-    carryOverlap = inter / Math.min(comp.carries.size, domCarries.size);
+    carryOverlap = diceOverlap(comp.carries, domCarries);
   }
 
   const { containment, jaccard } = weightedOverlap(comp, repUnits, d.repWeightSum);
@@ -1151,13 +1171,23 @@ export async function mergeComps(profiles: CompProfile[]): Promise<MergeResult> 
   const archetypes  = new Map<string, number[]>();
   const archetypeProfiles = new Map<string, CompProfile>();
 
+  // The ##k: anchor is the SMALLEST member comp id, not the first-added one.
+  //
+  // `compIds[0]` is whichever comp happened to be added first, which the pass-3
+  // refinement rebuild can change without the archetype meaningfully changing —
+  // and `meta_comp` is both the downstream grouping key AND the /comps/[key]
+  // URL, so a churned anchor silently 404s every shared or bookmarked link to
+  // that archetype (comp-detail-service only re-resolves stale 'c:' keys, not
+  // 'm:' ones). min() is stable under any reordering of the same membership, so
+  // the label only moves when the membership itself genuinely changes.
+  const anchorId = (acc: ArchetypeAcc): number =>
+    acc.compIds.length === 0 ? 0 : Math.min(...acc.compIds);
+
   for (const [label, group] of byLabel) {
-    group.sort(
-      (a, b) => b.totalWeight - a.totalWeight || (a.compIds[0] ?? 0) - (b.compIds[0] ?? 0),
-    );
+    group.sort((a, b) => b.totalWeight - a.totalWeight || anchorId(a) - anchorId(b));
     for (let idx = 0; idx < group.length; idx++) {
       const acc = group[idx];
-      const final = idx === 0 ? label : `${label}##k:${acc.compIds[0]}`;
+      const final = idx === 0 ? label : `${label}##k:${anchorId(acc)}`;
       for (const compId of acc.compIds) assignments.set(compId, final);
       archetypes.set(final, [...acc.compIds]);
       archetypeProfiles.set(final, accProfile(acc));
