@@ -30,6 +30,7 @@
 
 import { unstable_cache } from 'next/cache';
 import { query } from '@/lib/db';
+import { GKEY_SQL } from './comp-gkey';
 import { getCatalog } from './static-data';
 import {
   computeMetrics,
@@ -206,8 +207,10 @@ function bucketRank(b: string): number {
 }
 
 // Grouping key: 'm:<meta_comp>' (the archetype/family), 'c:<comp_id>' for
-// unlabeled singletons.
-export const GKEY_SQL = `COALESCE('m:' || NULLIF(c.meta_comp, ''), 'c:' || c.id::text)`;
+// unlabeled singletons. Defined in ./comp-gkey so the trend-tier stage can share
+// it without importing this module (which pulls in next/cache); re-exported here
+// because every existing call site imports it from comps-service.
+export { GKEY_SQL };
 
 /** Per-archetype (gkey) pooled n + score for a bucket — the population dynamic
  *  tier cutoffs are derived from. Shared by the tier list and the detail page so
