@@ -2,6 +2,7 @@ import { riot, Priority, routeForPlatform, RiotApiError } from '@/lib/riot';
 import type { Platform } from '@/config/regions';
 import { query } from '@/lib/db';
 import { CRAWL } from '@/config/crawl';
+import { advanceCurrentPatch } from '@/server/patch';
 import { bucketForTier, tierInScope } from '@/config/rank-buckets';
 import { makeQueue, QUEUE } from '../queues';
 import type { JobContext } from '../job-tracking';
@@ -55,7 +56,8 @@ function envInt(key: string, fallback: number): number {
 // deploy-to-first-observation gap (the filter otherwise permanently hides
 // current-patch games played before we first saw one). Bootstrap (no
 // current-patch match yet) → no filter; the boundary self-advances when
-// resolvePatchId flips is_current on the next patch's first ingested match.
+// advanceCurrentPatch() moves is_current, which runs at the top of this same
+// pass — so the boundary is always derived from a flag settled moments ago.
 // Set CRAWL_CURRENT_PATCH_ONLY=false to crawl full recent histories.
 const CURRENT_PATCH_ONLY = process.env.CRAWL_CURRENT_PATCH_ONLY !== 'false';
 
@@ -86,6 +88,15 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
   const tierTtlHours = envInt('CRAWL_TIER_TTL_HOURS', 72);
 
   try {
+    // 0) SETTLE THE CURRENT PATCH. Derived from ingested matches, so this is
+    //    the natural place for it: ladder-crawl is the only producer of new
+    //    ingestion AND the main consumer of the flag (currentPatchStart below
+    //    bounds the fetch budget by it). It used to run inside every
+    //    match-persist transaction, where it deadlocked against the pipeline
+    //    stages — see advanceCurrentPatch's header.
+    const flagged = await advanceCurrentPatch();
+    if (flagged?.changed) console.log(`[ladder-crawl] current patch advanced to ${flagged.patch}`);
+
     // 1) DISCOVER — register apex ladder puuids as uncrawled candidates. One
     //    cached Riot call per tier; no per-player fetches. Entries missing a
     //    puuid are skipped (they'll be discovered as match participants anyway).
