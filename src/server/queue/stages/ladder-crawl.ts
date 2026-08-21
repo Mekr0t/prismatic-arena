@@ -1,4 +1,4 @@
-import { riot, Priority, routeForPlatform } from '@/lib/riot';
+import { riot, Priority, routeForPlatform, RiotApiError } from '@/lib/riot';
 import type { Platform } from '@/config/regions';
 import { query } from '@/lib/db';
 import { CRAWL } from '@/config/crawl';
@@ -170,10 +170,30 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
           tier = entries.find((e) => e.queueType === RANKED_TFT)?.tier ?? null;
           tierLookups += 1;
         } catch (err) {
-          // Treat an unresolvable tier as out of scope for this pass rather than
-          // guessing: a wrong bucket is worse than a missing board.
+          // A failed lookup means we can't bucket this player's boards, and a
+          // wrong bucket is worse than a missing board — so we always skip them
+          // this pass. WHETHER TO BURN THE CANDIDATE depends on WHY it failed:
+          //
+          //   permanent (400, malformed puuid) → mark crawled, or one bad id
+          //     jumps back to the front of the drain forever and wedges it;
+          //   infrastructure (401/403 auth, 429, 5xx, 503 transport) → do NOT
+          //     mark crawled. The failure says nothing about the player, and
+          //     marking them burned ~240 accounts per pass into the 12 h recrawl
+          //     window during an expired-key window, having fetched nothing.
+          //
+          // An auth failure additionally aborts the pass: if the key is dead
+          // every remaining candidate fails identically, and there is no point
+          // spending the rest of the budget discovering that one call at a time.
+          const status = err instanceof RiotApiError ? err.status : 0;
+          if (status === 401 || status === 403) {
+            console.error(
+              `[ladder-crawl] auth failed (${status}) — aborting this pass, no candidate ` +
+                'marked crawled. Check RIOT_API_KEY.',
+            );
+            break;
+          }
+          if (status === 400) crawled.push(puuid); // permanently bad id
           console.warn(`[ladder-crawl] tier lookup failed for ${puuid}: ${(err as Error).message}`);
-          crawled.push(puuid);
           continue;
         }
         await query(
