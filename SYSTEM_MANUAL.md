@@ -45,6 +45,10 @@ src/
   server/                Server-only services (DB + API orchestration)
     queue/               BullMQ connection, queues, job tracking, worker entrypoint
       stages/            Per-stage BullMQ job logic (ladder-crawl, match-fetch, …)
+.github/
+  workflows/ci.yml       typecheck · lint · test on every push and PR, plus a
+                         Postgres+Redis job that migrates an EMPTY database
+                         and runs the persistMatch check
 db/
   migrations/            Ordered *.sql, applied by `npm run db:migrate`
 scripts/
@@ -76,6 +80,18 @@ scripts/
                          live archetype, a live key does NOT redirect, and genuinely bogus
                          keys still 404. Read-only. Run with `npx tsx scripts/_key-check.ts`
 ```
+
+### Testing & CI
+`npm test` is `tsx --test "src/**/*.test.ts"` — a GLOB since 2026-08-22, so a new `*.test.ts` anywhere under `src/` is picked up instead of being silently skipped (it used to name two files explicitly). **78 tests:**
+
+| file | covers |
+|---|---|
+| `queue/comp-merge.test.ts` + `comp-profile.test.ts` | the merge: /photos board-pair semantics and named regressions |
+| `config/env.test.ts` | boot validation — fatal vs warning tiers, per-runtime scoping, all-problems-in-one-throw |
+| `lib/riot/rate-limiter.test.ts` | window enforcement, multi-window, priority ordering, FIFO within a level — and one test that PINS THE KNOWN LIMITATION that two instances do not share a budget (audit §4, "One key, two budgets") |
+| `queue/comp-stats-math.test.ts` | every displayed number: Wilson bounds, SEM, shrinkage (a 1-game win must not outscore a 400-game comp), tier bands, dynamic cutoffs |
+
+`.github/workflows/ci.yml` runs two jobs. **check** — `typecheck`, `lint`, `test`, each with `if: always()` so one lint error still reveals whether the tests pass rather than costing a round-trip. **db-check** — Postgres 16 + Redis 7 service containers, applies every migration to an EMPTY database, then runs `scripts/_persist-check.ts` (synthetic and self-cleaning, so it needs no fixtures). That second job is what lets a DB-touching check run automatically at all, and it incidentally proves the forward-only migrations still apply from zero — verified 2026-08-22 against a throwaway database: 20/20 migrations applied, 19/19 checks passed. The `RIOT_API_KEY` there is a dummy that only satisfies the boot validator; the check makes no Riot calls.
 
 ---
 

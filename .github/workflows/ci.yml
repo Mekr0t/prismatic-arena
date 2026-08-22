@@ -1,0 +1,85 @@
+name: CI
+
+# Runs on every push and PR. Until now nothing checked this repo automatically —
+# `typecheck`, `lint` and `test` were only ever run by hand, so a regression
+# reached the branch whenever someone forgot.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A new push supersedes the run it interrupted; no point finishing a build for
+# a commit that is already stale.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck · lint · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # Ordered cheapest-signal-first, and NOT short-circuited: `if: always()`
+      # means one lint error still lets you see whether the tests pass, instead
+      # of costing a round-trip to find out.
+      - name: typecheck
+        run: npm run typecheck
+      - name: lint
+        if: always()
+        run: npm run lint
+      - name: test
+        if: always()
+        run: npm test
+
+  db-check:
+    # The DB-touching checks cannot run in `npm test` (which is pure node:test,
+    # no fixtures) — this is where they DO get to run. `_persist-check.ts` is
+    # fully synthetic and self-cleaning, so a throwaway database is all it needs.
+    # It also proves the migrations still apply from EMPTY, which nothing else
+    # does: they are forward-only and every dev DB was built incrementally.
+    name: migrations + persistMatch (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tft_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/tft_ci
+      REDIS_URL: redis://localhost:6379
+      # NOT a real key, and not a secret. The check makes zero Riot calls; this
+      # only satisfies the boot validator (src/config/env.ts), which requires the
+      # variable to be present and not the .env.example placeholder.
+      RIOT_API_KEY: RGAPI-00000000-0000-0000-0000-000000000000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: apply migrations to an empty database
+        run: npm run db:migrate
+      - name: persistMatch behavioural check
+        run: npx tsx scripts/_persist-check.ts
