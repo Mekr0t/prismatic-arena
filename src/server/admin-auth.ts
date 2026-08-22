@@ -30,15 +30,31 @@ function signPayload(payload: string): string {
   return createHmac('sha256', getSecret()).update(payload).digest('base64url');
 }
 
-/** Signed session token: base64url(json).hmac */
-function issueToken(): string {
+/**
+ * Signed session token: `base64url(json).hmac`.
+ *
+ * Exported alongside verifyToken as the token contract: together they are the
+ * whole of the admin authentication surface, and everything else in this file
+ * is cookie plumbing around them. Keeping them private meant the security
+ * cases that matter — forgery, tampering, expiry, secret rotation — could not be
+ * tested at all, which is the wrong trade for the only thing guarding /admin.
+ */
+export function issueToken(): string {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const payload = Buffer.from(JSON.stringify({ exp })).toString('base64url');
   return `${payload}.${signPayload(payload)}`;
 }
 
-/** Verify signature + expiry. True only for a valid, unexpired token. */
-function verifyToken(token: string): boolean {
+/**
+ * Verify signature + expiry. True only for a valid, unexpired token.
+ *
+ * THROWS if ADMIN_SESSION_SECRET is unset (via signPayload). That is deliberate
+ * — a missing secret is a deployment fault, not a failed login — so callers
+ * that must not crash catch it and treat it as unauthenticated, as isAuthed
+ * does. Boot validation (config/env.ts) should make this unreachable in
+ * practice.
+ */
+export function verifyToken(token: string): boolean {
   const dot = token.indexOf('.');
   if (dot <= 0) return false;
   const payload = token.slice(0, dot);
