@@ -12,7 +12,7 @@
     "worker": "tsx src/server/queue/worker.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx --test src/server/queue/comp-merge.test.ts src/server/queue/comp-profile.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "merge:eval": "tsx scripts/merge-eval.ts"
   },
   "dependencies": {

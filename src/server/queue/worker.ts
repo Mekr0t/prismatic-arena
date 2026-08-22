@@ -1,4 +1,4 @@
-import './env'; // MUST be first — loads .env before @/lib/db builds its pool
+import './env'; // MUST be first — loads .env AND validates it (see that file)
 import { Worker } from 'bullmq';
 import { bullConnection } from './connection';
 import { makeQueue, QUEUE } from './queues';

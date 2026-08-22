@@ -126,9 +126,80 @@ const rate = (n: number, d: number): number => (d > 0 ? n / d : 0);
  * 'c:<comp_id>'). Returns null when the group has no boards in the resolved
  * (patch, region, bucket).
  */
+/** Current grouping key for a comp id, or null if the comp is gone. */
+async function gkeyOfComp(compId: number): Promise<string | null> {
+  if (!Number.isFinite(compId)) return null;
+  const rows = await query<{ gkey: string }>(
+    `SELECT ${GKEY_SQL} AS gkey FROM comps c WHERE c.id = $1`,
+    [compId],
+  );
+  return rows[0]?.gkey ?? null;
+}
+
+/**
+ * Resolve a grouping key that matches nothing to the group it has BECOME.
+ *
+ * `/comps/[key]` is `m:<meta_comp>`, and meta_comp is DERIVED: the merge
+ * recomputes it hourly from dominant carries, `##dup:`/`##aug:`/`##gate:` tags
+ * and a `##k:<compId>` collision anchor. Any of those can move, so a bookmarked
+ * or shared link goes stale on its own and used to 404 outright.
+ *
+ * Three strategies, most precise first. All of them run ONLY after an exact
+ * match has failed, so the happy path pays nothing.
+ *
+ *   1. `c:<id>` — an unlabeled singleton that the merge has since labelled.
+ *   2. `##k:<id>` — EXACT, and the reason this is worth doing: the collision
+ *      anchor is a real member comp's id (min(compIds) since Rev 10). Whatever
+ *      the group was renamed to, that comp still exists and still belongs to
+ *      whichever group it is in now, so following it is a fact, not a guess.
+ *      22,565 of the current labels carry one.
+ *   3. Carry base — strip the `##` tag segments and look for a live group with
+ *      the same carries in this bucket. This is the HEURISTIC one: bases do
+ *      collide (`no_carry` spans 124 distinct labels, `Ornn|Samira` 14), so it
+ *      takes the biggest pooled group and is deliberately last. A neighbouring
+ *      archetype beats a 404 for a link someone shared.
+ */
+async function resolveStaleKey(
+  groupKey: string,
+  patchId: number,
+  region: string,
+  rankBucket: string,
+): Promise<string | null> {
+  if (groupKey.startsWith('c:')) return gkeyOfComp(Number(groupKey.slice(2)));
+  if (!groupKey.startsWith('m:')) return null;
+  const label = groupKey.slice(2);
+
+  const anchor = /##k:(\d+)/.exec(label);
+  if (anchor) {
+    const viaAnchor = await gkeyOfComp(Number(anchor[1]));
+    if (viaAnchor) return viaAnchor;
+  }
+
+  const base = label.split('##')[0];
+  if (!base) return null;
+  const rows = await query<{ gkey: string }>(
+    `SELECT ${GKEY_SQL} AS gkey
+       FROM comp_stats cs
+       JOIN comps c ON c.id = cs.comp_id
+      WHERE cs.patch_id = $1 AND cs.region = $2 AND cs.rank_bucket = $3
+        AND c.meta_comp IS NOT NULL
+        AND split_part(c.meta_comp, '##', 1) = $4
+      GROUP BY 1
+      ORDER BY sum(cs.n) DESC
+      LIMIT 1`,
+    [patchId, region, rankBucket, base],
+  );
+  return rows[0]?.gkey ?? null;
+}
+
+/** Hops allowed while chasing a renamed group. One is enough for every real
+ *  case; the cap exists so two keys that resolve to each other cannot loop. */
+const MAX_KEY_HOPS = 3;
+
 export async function getCompDetail(
   groupKey: string,
   q: TierListQuery = {},
+  hop = 0,
 ): Promise<CompDetailVM | null> {
   const { combos, patches } = await loadCombos();
   const { selection } = resolveSelection(combos, patches, q);
@@ -151,20 +222,13 @@ export async function getCompDetail(
     [patchId, region, rankBucket, groupKey],
   );
   if (familyMembers.length === 0) {
-    // A singleton link can go stale: the hourly merge may have labeled this
-    // comp after the list was rendered, moving it under 'm:<label>'. Resolve
-    // the comp's CURRENT group key and serve that instead of a 404.
-    if (groupKey.startsWith('c:')) {
-      const compId = Number(groupKey.slice(2));
-      if (Number.isFinite(compId)) {
-        const cur = await query<{ gkey: string }>(
-          `SELECT ${GKEY_SQL} AS gkey FROM comps c WHERE c.id = $1`,
-          [compId],
-        );
-        const nextKey = cur[0]?.gkey;
-        if (nextKey && nextKey !== groupKey) return getCompDetail(nextKey, q);
-      }
-    }
+    // The link is stale — the merge renamed or re-grouped this archetype after
+    // the page that linked here was rendered. Chase it (see resolveStaleKey)
+    // rather than 404ing; the VM reports whichever key actually matched, so the
+    // page can redirect and heal the bookmark.
+    if (hop >= MAX_KEY_HOPS) return null;
+    const nextKey = await resolveStaleKey(groupKey, patchId, region, rankBucket);
+    if (nextKey && nextKey !== groupKey) return getCompDetail(nextKey, q, hop + 1);
     return null;
   }
 

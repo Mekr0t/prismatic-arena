@@ -7,6 +7,14 @@
 // @next/env is CJS, so the named export is pulled off the default import
 // (a bare named import breaks under tsx's ESM interop).
 import nextEnv from '@next/env';
+import { assertEnv } from '@/config/env';
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
+
+// Validate immediately, HERE rather than in worker.ts's body, for the same
+// ordering reason the load itself lives here: ESM hoists every import above
+// module-body code, so an assertEnv() call in worker.ts would run only after
+// @/lib/db had already constructed its pool. As a side-effect import that
+// worker.ts lists first, this runs before any of that.
+assertEnv('worker');
