@@ -137,7 +137,8 @@ export function encodeBoard(board: Cell[]): string {
  * Encodes the current board into the official Riot TFT team-planner string.
  * - Deduplicates by unit id (first occurrence wins — order on board is preserved).
  * - Skips units with no plannerCode (they won't import into the game anyway).
- * - Caps at 10 champions; pads remaining slots with "00".
+ * - Caps at 10 champions; pads remaining slots with "000" (each slot is 3 hex
+ *   digits, so a padded code is always 30 characters between the prefix and tag).
  * Returns null when no encodeable unit is on the board.
  */
 export function encodeRiotCode(
