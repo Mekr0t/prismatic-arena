@@ -28,9 +28,10 @@ import { buildCompProfile, buildTailProfile } from '../comp-profile';
 import { mergeComps, makeTailAssigner, type CompProfile } from '../comp-merge';
 import { emblemsFromSignature } from '../comp-signature';
 import type { RawUnitItem } from '../carry-classify';
+import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 
 // TFT Ranked queue id — keep Double Up / Hyper Roll / normals out.
-const RANKED_TFT_QUEUE_ID = 1100;
+// Re-exported from config so the writer (match-persist) and every reader agree.
 
 const _num = (v: string | undefined, d: number) => {
   const n = Number(v);

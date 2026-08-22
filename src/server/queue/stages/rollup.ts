@@ -12,6 +12,7 @@
 
 import { pool } from '@/lib/db';
 import type { JobContext } from '../job-tracking';
+import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 
 export interface RollupJob {
   /** Reserved for future patch/region scoping; the current rollup is a full recompute. */
@@ -19,7 +20,7 @@ export interface RollupJob {
 }
 
 // Standard-ranked filter — same as the clusterer, so denominators line up.
-const RANKED_TFT_QUEUE_ID = 1100;
+// Re-exported from config so the writer (match-persist) and every reader agree.
 
 export async function runRollup(_job: RollupJob, ctx: JobContext): Promise<void> {
   const client = await pool.connect();

@@ -2,6 +2,7 @@ import type { MatchDto } from '@/lib/riot/types';
 import type { RankBucket } from '@/config/rank-buckets';
 import { pool, query } from '@/lib/db';
 import { resolvePatchId } from './patch';
+import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 
 // Idempotent match persistence — shared by the profile write-path and the M4
 // match-fetch worker so both store matches through exactly one path. Early-exits
@@ -15,6 +16,24 @@ import { resolvePatchId } from './patch';
 // that is ~76 000 round-trips whose cost is almost entirely latency, and it held
 // the transaction open for all of it. Each table is now one multi-row INSERT
 // built with unnest(), taking the whole match to ~10 statements.
+//
+// RANKED ONLY, for the BOARDS. The `matches` row is always written; the
+// participant fan-out (boards, units, traits, augments) is written only for
+// queue 1100. Every downstream stage and every read query already filters on
+// that queue, so for the other half of the crawl — Double Up, Normals, event
+// modes — the fan-out produced ~190 rows per match that nothing has ever read.
+// Measured 2026-08-21: 50,754 of 104,342 stored matches (48.6%) are non-ranked,
+// accounting for roughly half of participant_units (1441 MB), participant_traits
+// (1302 MB) and match_participants (1161 MB).
+//
+// The `matches` row MUST stay. It is what the dedup check reads, so dropping it
+// would make the crawler re-fetch every non-ranked match on every pass — MORE
+// Riot budget spent, not less. The queue id is only known AFTER the fetch, so
+// none of this saves API quota; what it saves is write throughput and disk.
+//
+// A match with no queue_id at all is treated as non-ranked: readers filter
+// `queue_id = 1100`, so a NULL would be invisible to them anyway, and storing
+// boards no reader can reach is exactly what this change removes.
 //
 // The idempotency semantics are unchanged and depend on one subtlety: the
 // participant insert is ON CONFLICT DO NOTHING ... RETURNING, which returns rows
@@ -39,22 +58,48 @@ interface ChildRows {
  *   profile write-path has no crawl context and omits it, so those boards record
  *   'unknown' instead of inheriting a rank nobody checked.
  */
+/** What a persist call actually did, so callers can report it. */
+export type PersistOutcome =
+  | 'skipped' // already stored
+  | 'stored' // ranked: matches row + full participant fan-out
+  | 'meta-only'; // non-ranked: matches row only (see the RANKED ONLY note above)
+
 export async function persistMatch(
   match: MatchDto,
   bucket: RankBucket = 'unknown',
-): Promise<void> {
+): Promise<PersistOutcome> {
   const matchId = match.metadata.match_id;
 
   // Finished matches are immutable: skip if we already have it.
   const existing = await query('SELECT 1 FROM matches WHERE match_id = $1', [matchId]);
-  if (existing.length > 0) return;
+  if (existing.length > 0) return 'skipped';
 
   const info = match.info;
   const region = matchId.split('_')[0]; // e.g. 'EUW1'
+  const isRanked = info.queue_id === RANKED_TFT_QUEUE_ID;
+
+  // BOTS ARE NOT PLAYERS. AI-filled lobbies report every bot with the SAME
+  // literal puuid 'BOT', and the participant insert below is
+  // ON CONFLICT (match_id, puuid) DO NOTHING — so a lobby's bots used to
+  // collapse into a single stored row. That is the entire cause of what the
+  // audit recorded as "short lobbies": measured 2026-08-22, all 955 ranked
+  // matches with fewer than 8 stored boards contained a bot row, and none was
+  // short for any other reason. Worse, 1,825 of those surviving bot boards had
+  // been clustered into 1,161 real comps at avg placement 6.34.
+  //
+  // So bots are dropped here, and player_count records how many real players
+  // were actually in the lobby. A board that only had to beat bots is not
+  // evidence about the meta (10,010 such boards averaged 3.638 / 67.4 % top-4,
+  // against 4.500 / 50.00 % for full lobbies), so the cluster stage stamps only
+  // player_count = 8 matches and everything downstream follows from that.
+  const realParticipants = info.participants.filter((p) => p.puuid !== 'BOT');
+  const playerCount = realParticipants.length;
 
   // Shape every child row up front, keyed by puuid — no DB access in this phase.
+  // Skipped entirely for a non-ranked match: nothing below will read it, and at
+  // ~half the crawl this is real CPU (8 boards × ~10 units, sorted per board).
   const childrenByPuuid = new Map<string, ChildRows>();
-  for (const p of info.participants) {
+  for (const p of isRanked ? realParticipants : []) {
     // Carry heuristic: most items, tie-broken by rarity (cost tier).
     const carryId = [...p.units].sort(
       (a, b) => b.itemNames.length - a.itemNames.length || b.rarity - a.rarity,
@@ -89,8 +134,9 @@ export async function persistMatch(
 
     await client.query(
       `INSERT INTO matches
-         (match_id, region, patch_id, game_version, queue_id, set_number, game_datetime, game_length)
-       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0), $8)
+         (match_id, region, patch_id, game_version, queue_id, set_number,
+          game_datetime, game_length, player_count)
+       VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0), $8, $9)
        ON CONFLICT (match_id) DO NOTHING`,
       [
         matchId,
@@ -101,8 +147,17 @@ export async function persistMatch(
         info.tft_set_number,
         info.game_datetime,
         info.game_length,
+        playerCount,
       ],
     );
+
+    // Non-ranked stops here: the matches row is stored (dedup depends on it),
+    // the boards are not. COMMIT before returning — the transaction is complete,
+    // it just contains one statement.
+    if (!isRanked) {
+      await client.query('COMMIT');
+      return 'meta-only';
+    }
 
     // One insert for all 8 participants. RETURNING puuid alongside id is what
     // lets the child rows below attach to the right parent without a second read.
@@ -120,14 +175,14 @@ export async function persistMatch(
        RETURNING id, puuid`,
       [
         matchId,
-        info.participants.map((p) => p.puuid),
-        info.participants.map((p) => p.placement),
-        info.participants.map((p) => p.level),
-        info.participants.map((p) => p.last_round),
-        info.participants.map((p) => p.players_eliminated),
-        info.participants.map((p) => p.gold_left),
-        info.participants.map((p) => p.total_damage_to_players),
-        info.participants.map((p) => JSON.stringify(p.companion ?? null)),
+        realParticipants.map((p) => p.puuid),
+        realParticipants.map((p) => p.placement),
+        realParticipants.map((p) => p.level),
+        realParticipants.map((p) => p.last_round),
+        realParticipants.map((p) => p.players_eliminated),
+        realParticipants.map((p) => p.gold_left),
+        realParticipants.map((p) => p.total_damage_to_players),
+        realParticipants.map((p) => JSON.stringify(p.companion ?? null)),
         bucket,
       ],
     );
@@ -210,6 +265,7 @@ export async function persistMatch(
     }
 
     await client.query('COMMIT');
+    return 'stored';
   } catch (err) {
     try {
       await client.query('ROLLBACK');

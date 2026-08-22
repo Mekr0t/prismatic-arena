@@ -56,3 +56,36 @@ export async function withJobTracking<T>(
     throw err; // rethrow so BullMQ also records the job as failed
   }
 }
+
+
+/**
+ * Mark orphaned `running` rows as failed. Called once at worker boot.
+ *
+ * withJobTracking writes `running` up front and only reconciles when the callback
+ * settles, so ANY worker killed mid-job (Ctrl-C, crash, machine sleep, OOM)
+ * leaves its row `running` forever. Measured 2026-08-21: 60 such rows across six
+ * job types, the oldest from 2026-07-01 — they sit in the admin panel's job list
+ * and make "is the pipeline healthy?" unanswerable at a glance. scripts/
+ * drain-active.ts cleans them but is manual and had clearly not kept up.
+ *
+ * SAFE AGAINST FALSE POSITIVES, two ways. The threshold is far longer than any
+ * real stage (the slowest measured sweep is cluster at ~48 s against a 5-minute
+ * BullMQ lock), and more importantly the write is ADVISORY: if a job we marked
+ * failed is actually still alive, withJobTracking's own UPDATE at the end
+ * overwrites the row with the true outcome. So a wrong guess self-corrects
+ * rather than losing information — which is what makes it safe to run at boot
+ * even when a second worker process is live.
+ *
+ * Returns the number of rows reconciled.
+ */
+export async function reconcileStuckJobs(olderThanMinutes: number): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `UPDATE ingestion_jobs
+        SET status = 'failed', finished_at = now(), error_count = error_count + 1
+      WHERE status = 'running'
+        AND started_at < now() - ($1::int * interval '1 minute')
+      RETURNING id`,
+    [olderThanMinutes],
+  );
+  return rows.length;
+}

@@ -1,8 +1,8 @@
-import './env'; // MUST be first — loads .env before @/lib/db builds its pool
+import './env'; // MUST be first — loads .env AND validates it (see that file)
 import { Worker } from 'bullmq';
 import { bullConnection } from './connection';
 import { makeQueue, QUEUE } from './queues';
-import { withJobTracking } from './job-tracking';
+import { withJobTracking, reconcileStuckJobs } from './job-tracking';
 import { CRAWL } from '@/config/crawl';
 import { runLadderCrawl, type LadderCrawlJob } from './stages/ladder-crawl';
 import { runMatchFetch, type MatchFetchJob } from './stages/match-fetch';
@@ -161,6 +161,21 @@ if (CHAIN_ENABLED && activeDownstream.length > 0) {
 }
 /** True when a mid-pipeline stage may be kicked directly (i.e. chaining is off). */
 const allowDownstreamBoot = !CHAIN_ENABLED;
+
+// Reconcile ingestion_jobs rows orphaned by a previous worker's death, before
+// anything new is enqueued, so the admin panel's job list reflects reality from
+// the moment this process is up. Advisory and self-correcting — see
+// reconcileStuckJobs. Fire-and-forget: a failure here must not stop the worker
+// from doing its actual job.
+const STUCK_JOB_MINUTES = (() => {
+  const n = Number(process.env.JOB_STUCK_MINUTES);
+  return Number.isFinite(n) && n > 0 ? n : 30;
+})();
+reconcileStuckJobs(STUCK_JOB_MINUTES)
+  .then((n) => {
+    if (n > 0) console.log(`[worker] reconciled ${n} stuck 'running' job row(s) from a previous run`);
+  })
+  .catch((e) => console.error('[worker] stuck-job reconcile failed:', e));
 
 // Remove the repeatable schedules and exit. Run with: SCHED_CLEAR=1 npm run worker
 if (process.env.SCHED_CLEAR === '1') {

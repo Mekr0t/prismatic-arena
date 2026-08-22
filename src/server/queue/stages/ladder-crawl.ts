@@ -1,7 +1,8 @@
-import { riot, Priority, routeForPlatform } from '@/lib/riot';
+import { riot, Priority, routeForPlatform, RiotApiError } from '@/lib/riot';
 import type { Platform } from '@/config/regions';
 import { query } from '@/lib/db';
 import { CRAWL } from '@/config/crawl';
+import { advanceCurrentPatch } from '@/server/patch';
 import { bucketForTier, tierInScope } from '@/config/rank-buckets';
 import { makeQueue, QUEUE } from '../queues';
 import type { JobContext } from '../job-tracking';
@@ -55,7 +56,8 @@ function envInt(key: string, fallback: number): number {
 // deploy-to-first-observation gap (the filter otherwise permanently hides
 // current-patch games played before we first saw one). Bootstrap (no
 // current-patch match yet) → no filter; the boundary self-advances when
-// resolvePatchId flips is_current on the next patch's first ingested match.
+// advanceCurrentPatch() moves is_current, which runs at the top of this same
+// pass — so the boundary is always derived from a flag settled moments ago.
 // Set CRAWL_CURRENT_PATCH_ONLY=false to crawl full recent histories.
 const CURRENT_PATCH_ONLY = process.env.CRAWL_CURRENT_PATCH_ONLY !== 'false';
 
@@ -86,6 +88,15 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
   const tierTtlHours = envInt('CRAWL_TIER_TTL_HOURS', 72);
 
   try {
+    // 0) SETTLE THE CURRENT PATCH. Derived from ingested matches, so this is
+    //    the natural place for it: ladder-crawl is the only producer of new
+    //    ingestion AND the main consumer of the flag (currentPatchStart below
+    //    bounds the fetch budget by it). It used to run inside every
+    //    match-persist transaction, where it deadlocked against the pipeline
+    //    stages — see advanceCurrentPatch's header.
+    const flagged = await advanceCurrentPatch();
+    if (flagged?.changed) console.log(`[ladder-crawl] current patch advanced to ${flagged.patch}`);
+
     // 1) DISCOVER — register apex ladder puuids as uncrawled candidates. One
     //    cached Riot call per tier; no per-player fetches. Entries missing a
     //    puuid are skipped (they'll be discovered as match participants anyway).
@@ -170,10 +181,30 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
           tier = entries.find((e) => e.queueType === RANKED_TFT)?.tier ?? null;
           tierLookups += 1;
         } catch (err) {
-          // Treat an unresolvable tier as out of scope for this pass rather than
-          // guessing: a wrong bucket is worse than a missing board.
+          // A failed lookup means we can't bucket this player's boards, and a
+          // wrong bucket is worse than a missing board — so we always skip them
+          // this pass. WHETHER TO BURN THE CANDIDATE depends on WHY it failed:
+          //
+          //   permanent (400, malformed puuid) → mark crawled, or one bad id
+          //     jumps back to the front of the drain forever and wedges it;
+          //   infrastructure (401/403 auth, 429, 5xx, 503 transport) → do NOT
+          //     mark crawled. The failure says nothing about the player, and
+          //     marking them burned ~240 accounts per pass into the 12 h recrawl
+          //     window during an expired-key window, having fetched nothing.
+          //
+          // An auth failure additionally aborts the pass: if the key is dead
+          // every remaining candidate fails identically, and there is no point
+          // spending the rest of the budget discovering that one call at a time.
+          const status = err instanceof RiotApiError ? err.status : 0;
+          if (status === 401 || status === 403) {
+            console.error(
+              `[ladder-crawl] auth failed (${status}) — aborting this pass, no candidate ` +
+                'marked crawled. Check RIOT_API_KEY.',
+            );
+            break;
+          }
+          if (status === 400) crawled.push(puuid); // permanently bad id
           console.warn(`[ladder-crawl] tier lookup failed for ${puuid}: ${(err as Error).message}`);
-          crawled.push(puuid);
           continue;
         }
         await query(
