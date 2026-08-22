@@ -18,8 +18,8 @@ export interface MatchFetchJob {
   platform: string;
   puuid: string;
   matchIds: string[];
-  // Rank bucket this batch was crawled from. Carried for the rollup; not
-  // persisted yet (match_participants.rank_bucket rides the 0009 default).
+  // Rank bucket this batch was crawled from, resolved by ladder-crawl's rank
+  // gate and written per board by persistMatch (R1).
   bucket: RankBucket;
 }
 
@@ -27,6 +27,8 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   const route = routeForPlatform(data.platform as Platform);
   let stored = 0;
   let skipped = 0;
+  let metaOnly = 0; // non-ranked: matches row written, boards deliberately not
+
   const discovered = new Set<string>();
 
   // One match id must not sink the batch. The client already retries transport
@@ -52,7 +54,8 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
       // The seed player's tier buckets every board in the match (TFT lobbies are
       // rank-homogeneous). This is what finally makes rank_bucket real instead
       // of the 0009 column default.
-      await persistMatch(match, data.bucket); // idempotent — re-checks existence
+      const outcome = await persistMatch(match, data.bucket); // idempotent — re-checks existence
+      if (outcome === 'meta-only') metaOnly += 1;
       // AI-filled lobbies report bot participants with the literal puuid "BOT" —
       // not a real account, and Riot 400s any match/league call made with it.
       for (const p of match.info.participants) {
@@ -78,7 +81,8 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   }
 
   console.log(
-    `[match-fetch] ${data.puuid}: stored=${stored} skipped=${skipped} failed=${errors.length} ` +
+    `[match-fetch] ${data.puuid}: stored=${stored} (meta-only=${metaOnly}) ` +
+      `skipped=${skipped} failed=${errors.length} ` +
       `total=${data.matchIds.length} discovered=${discovered.size}`,
   );
 

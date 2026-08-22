@@ -100,12 +100,17 @@ interface PlacementRow {
   placement: number;
   boards: number;
 }
+/** One real PLAY day for this archetype (grouped on matches.game_datetime). */
 interface TrendRow {
   date: string;
-  n: number;
+  games: number;
   placement_sum: number;
   top4: number;
-  bucket_total: number;
+}
+/** Boards played in the whole bucket that day — the play-rate denominator. */
+interface BucketDayRow {
+  date: string;
+  boards: number;
 }
 interface CarryItemRow {
   board_id: string; // bigint
@@ -211,7 +216,8 @@ export async function getCompDetail(
   const scope = [memberIds, patchId, region, rankBucket] as const;
 
   // ── Board-level aggregations (SQL-side, small results). ─────────────────────
-  const [unitStarRows, levelRows, placementRows, trendRows, carryItemRows] = await Promise.all([
+  const [unitStarRows, levelRows, placementRows, trendRows, bucketDayRows, carryItemRows] =
+    await Promise.all([
     query<UnitStarRow>(
       `WITH b AS (
          SELECT mp.id, mp.placement
@@ -261,21 +267,41 @@ export async function getCompDetail(
         GROUP BY mp.placement`,
       [...scope],
     ),
-    // Daily snapshots (comp_stat_trends stores CUMULATIVE sufficient stats per
-    // day; deltas between consecutive dates are computed below). bucket_total
-    // is identical on every row of a (patch, region, bucket, date) — MAX picks it.
+    // TREND, BY REAL PLAY DATE. This used to difference consecutive
+    // comp_stat_trends snapshots, which measured WHEN THE CRAWLER RAN, not when
+    // the comp was played: the rollup recomputes comp_stats from every stored
+    // board, so each snapshot is cumulative-over-INGESTION and a backfilled old
+    // match lands in today's delta. Measured 2026-08-21 on 16.13, whose last real
+    // match was 07-16: the chart drew bars on 08-17 and 08-18 (312 games nobody
+    // played then), compressed the genuinely-played 07-09..07-12 out of existence,
+    // and put the peak on the wrong day. Grouping on matches.game_datetime is
+    // retroactively correct instead — a backfilled match lands on the day it was
+    // actually played — and costs ~160 ms on the largest archetype, behind the
+    // same cache as the rest of this page.
     query<TrendRow>(
-      `SELECT snapshot_date::text AS date,
-              SUM(n)::int AS n,
-              SUM(placement_sum)::float8 AS placement_sum,
-              SUM(top4_count)::int AS top4,
-              MAX(bucket_total)::int AS bucket_total
-         FROM comp_stat_trends
-        WHERE comp_id = ANY($1::int[])
-          AND patch_id = $2 AND region = $3 AND rank_bucket = $4
-        GROUP BY snapshot_date
-        ORDER BY snapshot_date`,
+      `SELECT m.game_datetime::date::text AS date,
+              COUNT(*)::int AS games,
+              SUM(mp.placement)::float8 AS placement_sum,
+              COUNT(*) FILTER (WHERE mp.placement <= 4)::int AS top4
+         FROM match_participants mp
+         JOIN matches m ON m.match_id = mp.match_id
+        WHERE mp.comp_id = ANY($1::int[])
+          AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+          AND m.queue_id = 1100
+        GROUP BY 1
+        ORDER BY 1`,
       [...scope],
+    ),
+    // Play-rate denominator, on the same real-play-date grain. Bucket-wide, so
+    // it deliberately does NOT filter on comp_id.
+    query<BucketDayRow>(
+      `SELECT m.game_datetime::date::text AS date, COUNT(*)::int AS boards
+         FROM match_participants mp
+         JOIN matches m ON m.match_id = mp.match_id
+        WHERE m.patch_id = $1 AND m.region = $2 AND mp.rank_bucket = $3
+          AND m.queue_id = 1100
+        GROUP BY 1`,
+      [patchId, region, rankBucket],
     ),
     carryIds.length === 0 || buildMemberIds.length === 0
       ? Promise.resolve([] as CarryItemRow[])
@@ -509,27 +535,22 @@ export async function getCompDetail(
   const noHitN = varAccs.get('')?.n ?? 0;
   const hitStatesDefault = 1 - rate(noHitN, header.metrics.n) >= HITS_DEFAULT_MIN_SHARE;
 
-  // ── Trend: deltas between consecutive daily snapshots. ──────────────────────
-  // The first snapshot counts from patch start; periods where nothing was
-  // crawled (dn <= 0, e.g. identical back-to-back snapshots) are skipped.
-  const trend: DetailTrendPointVM[] = [];
-  let prev: TrendRow | null = null;
-  for (const row of trendRows) {
-    const dn = row.n - (prev?.n ?? 0);
-    if (dn > 0) {
-      const dPlacement = row.placement_sum - (prev?.placement_sum ?? 0);
-      const dTop4 = row.top4 - (prev?.top4 ?? 0);
-      const dBucket = row.bucket_total - (prev?.bucket_total ?? 0);
-      trend.push({
-        date: row.date,
-        games: dn,
-        avgPlacement: dPlacement / dn,
-        top4Rate: rate(dTop4, dn),
-        playRate: dBucket > 0 ? dn / dBucket : 0,
-      });
-    }
-    prev = row;
-  }
+  // ── Trend: one point per real PLAY day. ──────────────────────────────
+  // No differencing any more — each row already IS that day's games, because the
+  // grouping is on matches.game_datetime rather than on snapshot dates. A day
+  // with no games simply has no row, so gaps stay gaps instead of being smeared
+  // into the next crawl.
+  const bucketByDate = new Map(bucketDayRows.map((r) => [r.date, r.boards]));
+  const trend: DetailTrendPointVM[] = trendRows.map((row) => {
+    const bucketBoards = bucketByDate.get(row.date) ?? 0;
+    return {
+      date: row.date,
+      games: row.games,
+      avgPlacement: row.placement_sum / row.games,
+      top4Rate: rate(row.top4, row.games),
+      playRate: bucketBoards > 0 ? row.games / bucketBoards : 0,
+    };
+  });
 
   // ── Most-played exact boards + the variant-pooled header team. ──────────────
   const topMembers = [...members]

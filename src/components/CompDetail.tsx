@@ -164,15 +164,19 @@ function BuildRow({ build }: { build: DetailBuildVM }) {
 
 /** Dependency-free SVG trend: avg placement as a line in the upper zone
  *  (inverted — up is better) with the value printed at every dot, games per
- *  period as bars in the lower zone with counts, dates along the bottom.
+ *  DAY PLAYED as bars in the lower zone with counts, dates along the bottom.
  *  Self-explanatory without hover; when there are many points, labels thin
- *  out to every k-th column. */
+ *  out to every k-th column.
+ *
+ *  Dates are real play dates (grouped on the match's own game_datetime), not
+ *  the dates we happened to crawl on — so a day with no games is absent
+ *  rather than folded into the next crawl. */
 function TrendChart({ trend }: { trend: DetailTrendPointVM[] }) {
   if (trend.length < 2) {
     return (
       <p className="cd-note">
-        Not enough daily snapshots yet — the trend fills in as the trend-tier stage keeps
-        running.
+        Not enough days played on this patch yet — the trend fills in as more games are
+        collected.
       </p>
     );
   }
@@ -204,7 +208,7 @@ function TrendChart({ trend }: { trend: DetailTrendPointVM[] }) {
 
   return (
     <div className="cd-trend">
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Average placement and games per day">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Average placement and games played per day">
         <text className="cd-trend-zone" x={PAD_X - 26} y={LINE_TOP - 14}>
           AVG PLACE
         </text>
@@ -252,8 +256,8 @@ function TrendChart({ trend }: { trend: DetailTrendPointVM[] }) {
         ))}
       </svg>
       <p className="cd-note">
-        Each column is one snapshot period: the line is that period&rsquo;s average placement
-        (higher on the chart = better), the bars are how many games it was played.
+        Each column is one day this patch was played: the line is that day&rsquo;s average
+        placement (higher on the chart = better), the bars are how many games it was played.
       </p>
     </div>
   );

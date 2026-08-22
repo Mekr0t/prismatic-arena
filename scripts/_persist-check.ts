@@ -57,8 +57,43 @@ const dto = {
   },
 } as unknown as MatchDto;
 
+// Non-ranked variants, for the ranked-only board gate below.
+const DOUBLEUP_ID = 'ZZTEST1_9000000002';
+const NOQUEUE_ID = 'ZZTEST1_9000000003';
+const BOTLOBBY_ID = 'ZZTEST1_9000000004';
+const ALL_IDS = [MATCH_ID, DOUBLEUP_ID, NOQUEUE_ID, BOTLOBBY_ID];
+
+/** The same synthetic match under a different id and queue. */
+const dtoAs = (matchId: string, queueId: number | null) =>
+  ({ ...dto, metadata: { ...dto.metadata, match_id: matchId },
+     info: { ...dto.info, queue_id: queueId } }) as unknown as MatchDto;
+
+/** The same synthetic match with `bots` of its 8 seats taken by AI. Riot reports
+ *  EVERY bot with the identical literal puuid 'BOT'. */
+const dtoWithBots = (matchId: string, bots: number) =>
+  ({ ...dto, metadata: { ...dto.metadata, match_id: matchId },
+     info: { ...dto.info,
+       participants: dto.info.participants.map((p, i) =>
+         i < bots ? { ...p, puuid: 'BOT' } : p) } }) as unknown as MatchDto;
+
+const playerCount = async (matchId: string) =>
+  (await query<{ c: number | null }>(
+    `SELECT player_count AS c FROM matches WHERE match_id = $1`, [matchId]))[0]?.c ?? null;
+
+const boardCounts = async (matchId: string) => {
+  const r = await query<{ m: number; p: number; u: number }>(
+    `SELECT (SELECT count(*)::int FROM matches WHERE match_id = $1) m,
+            (SELECT count(*)::int FROM match_participants WHERE match_id = $1) p,
+            (SELECT count(*)::int FROM participant_units pu
+               JOIN match_participants mp ON mp.id = pu.participant_id
+              WHERE mp.match_id = $1) u`,
+    [matchId],
+  );
+  return r[0];
+};
+
 const cleanup = async () => {
-  await query(`DELETE FROM matches WHERE match_id = $1`, [MATCH_ID]); // cascades
+  await query(`DELETE FROM matches WHERE match_id = ANY($1::text[])`, [ALL_IDS]); // cascades
 };
 
 let failures = 0;
@@ -145,9 +180,48 @@ try {
     [MATCH_ID],
   );
   check('re-persist is a no-op', after, [{ p: 8, u: 18, t: 16, a: 10 }]);
+
+  // ── RANKED-ONLY BOARD GATE ────────────────────────────────────────────────
+  // Only queue 1100 gets a participant fan-out; everything else stores just the
+  // matches row. The matches row is the load-bearing part: it is what the crawl's
+  // dedup check reads, so if it stopped being written the crawler would re-fetch
+  // every non-ranked match on every pass and spend MORE Riot budget, not less.
+  console.log(`\nranked-only board gate:`);
+  check('ranked (1100) writes boards', await persistMatch(dtoAs(MATCH_ID + 'X', 1100)), 'stored');
+  await query(`DELETE FROM matches WHERE match_id = $1`, [MATCH_ID + 'X']);
+
+  check('Double Up (1160) is meta-only', await persistMatch(dtoAs(DOUBLEUP_ID, 1160), 'master_plus'), 'meta-only');
+  check('  ... matches row written, zero boards', await boardCounts(DOUBLEUP_ID), { m: 1, p: 0, u: 0 });
+  check('  ... dedup check still finds it',
+    (await query(`SELECT 1 FROM matches WHERE match_id = $1`, [DOUBLEUP_ID])).length, 1);
+  check('  ... re-persist is a no-op', await persistMatch(dtoAs(DOUBLEUP_ID, 1160), 'master_plus'), 'skipped');
+
+  // ── BOTS ARE NOT PLAYERS ────────────────────────────────────────
+  // AI-filled lobbies report every bot under the identical literal puuid 'BOT',
+  // and the participant insert is ON CONFLICT (match_id, puuid) DO NOTHING — so
+  // before this fix a lobby's bots collapsed into ONE stored row. That was the
+  // entire cause of the "short lobbies" the audit had recorded as a genuine
+  // Riot-payload characteristic: measured 2026-08-22, all 955 ranked matches
+  // with fewer than 8 stored boards contained a bot row and none was short for
+  // any other reason, and 1,825 surviving bot boards had been clustered into
+  // 1,161 real comps.
+  console.log(`
+bots are not players:`);
+  check('3 bots -> only the 5 real boards stored',
+    await persistMatch(dtoWithBots(BOTLOBBY_ID, 3), 'master_plus'), 'stored');
+  check('  ... 5 participants, no BOT row', await boardCounts(BOTLOBBY_ID), { m: 1, p: 5, u: 10 });
+  check('  ... zero rows carry the BOT puuid',
+    (await query(`SELECT 1 FROM match_participants WHERE match_id = $1 AND puuid = 'BOT'`, [BOTLOBBY_ID])).length, 0);
+  check('  ... player_count records the 5 real players', await playerCount(BOTLOBBY_ID), 5);
+  check('full lobby records player_count 8', await playerCount(MATCH_ID), 8);
+
+  // A NULL queue_id is invisible to every reader (they filter `queue_id = 1100`),
+  // so storing boards for it would be storing rows nothing can reach.
+  check('missing queue_id is meta-only', await persistMatch(dtoAs(NOQUEUE_ID, null), 'master_plus'), 'meta-only');
+  check('  ... zero boards', (await boardCounts(NOQUEUE_ID)).p, 0);
 } finally {
   await cleanup();
-  const left = await query<{ n: number }>(`SELECT count(*)::int n FROM matches WHERE match_id = $1`, [MATCH_ID]);
+  const left = await query<{ n: number }>(`SELECT count(*)::int n FROM matches WHERE match_id = ANY($1::text[])`, [ALL_IDS]);
   console.log(`\ncleanup: synthetic match rows remaining = ${left[0].n}`);
   await pool.end();
 }
