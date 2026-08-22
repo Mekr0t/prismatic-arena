@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { RegionalRoute } from '@/config/regions';
 
 // The Riot client is what stands between an upstream problem and a broken page,
 // and this session alone saw it produce a 503 (transport timeout) and a 429
@@ -43,11 +44,29 @@ const realSetTimeout = globalThis.setTimeout;
 interface Harness {
   calls: { url: string; token: string | undefined }[];
   delays: number[];
+  /** This test's private rate-limit bucket — see `harness`. */
+  route: RegionalRoute;
 }
 
+// EVERY TEST GETS ITS OWN RATE-LIMIT BUCKET, and this is load-bearing rather
+// than tidiness. The client keys one SlidingWindowQueue per regionKey, and for
+// match.byId the regionKey IS the route argument. Sharing 'europe' across the
+// file meant that once ~20 calls had accumulated, the limiter began sleeping
+// between requests — and because the harness patches the GLOBAL setTimeout, those
+// waits landed in `delays` alongside the client's retry backoff. Two writers,
+// one channel: locally the limiter never bound and the suite was green; on a
+// slower CI runner it did, and `delays` came back [7,7,6,5,3,2,1] for a request
+// that never retried at all.
+//
+// A unique route gives each test a fresh 20/s budget it cannot exhaust in four
+// calls, so `delays` has exactly one writer and the backoff assertions can stay
+// exact. regionalHost() only interpolates, and fetch is stubbed, so the host
+// these produce is never dialled.
+let bucket = 0;
+
 /** Serve `steps` in order (the last one repeats), and record backoff delays. */
-function harness(steps: Step[]): Harness {
-  const h: Harness = { calls: [], delays: [] };
+function harness(steps: Step[], route?: RegionalRoute): Harness {
+  const h: Harness = { calls: [], delays: [], route: route ?? (`t${(bucket += 1)}` as RegionalRoute) };
   let i = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -89,9 +108,10 @@ const MATCH = 'EUW1_1234567890';
 // ── the happy path ───────────────────────────────────────────────────────────
 
 test('a 200 returns the parsed body, authenticated, at the regional host', async () => {
-  const h = harness([json(200, { metadata: { match_id: MATCH } })]);
+  // Pinned to a real route: this is the one test that asserts the host.
+  const h = harness([json(200, { metadata: { match_id: MATCH } })], 'europe');
   try {
-    const out = await riot.match.byId('europe', MATCH);
+    const out = await riot.match.byId(h.route, MATCH);
     assert.equal((out as { metadata: { match_id: string } }).metadata.match_id, MATCH);
     assert.equal(h.calls.length, 1);
     assert.match(h.calls[0].url, /^https:\/\/europe\.api\.riotgames\.com\/tft\/match\/v1\/matches\//);
@@ -105,7 +125,7 @@ test('a 200 returns the parsed body, authenticated, at the regional host', async
 test('404 is a normal answer (unknown id / no matches), not an error', async () => {
   const h = harness([status(404)]);
   try {
-    assert.equal(await riot.match.byId('europe', MATCH), null);
+    assert.equal(await riot.match.byId(h.route, MATCH), null);
     assert.equal(h.calls.length, 1, 'a 404 must not be retried');
   } finally {
     restore();
@@ -117,7 +137,7 @@ test('404 is a normal answer (unknown id / no matches), not an error', async () 
 test('a 429 is retried and the call recovers', async () => {
   const h = harness([status(429), status(429), json(200, { ok: true })]);
   try {
-    assert.deepEqual(await riot.match.byId('europe', MATCH), { ok: true });
+    assert.deepEqual(await riot.match.byId(h.route, MATCH), { ok: true });
     assert.equal(h.calls.length, 3);
   } finally {
     restore();
@@ -128,7 +148,7 @@ test('a persistent 429 throws RiotApiError(429) after the retry budget', async (
   const h = harness([status(429)]);
   try {
     await assert.rejects(
-      () => riot.match.byId('europe', MATCH),
+      () => riot.match.byId(h.route, MATCH),
       (e: unknown) => {
         assert.ok(e instanceof RiotApiError);
         assert.equal((e as RiotErr).status, 429);
@@ -145,7 +165,7 @@ test('a persistent 429 throws RiotApiError(429) after the retry budget', async (
 test('Retry-After wins over the exponential backoff', async () => {
   const h = harness([status(429, { 'Retry-After': '7' }), json(200, { ok: true })]);
   try {
-    await riot.match.byId('europe', MATCH);
+    await riot.match.byId(h.route, MATCH);
     assert.ok(h.delays.includes(7000), `expected a 7s wait, saw ${h.delays.join(',')}`);
   } finally {
     restore();
@@ -155,7 +175,7 @@ test('Retry-After wins over the exponential backoff', async () => {
 test('without Retry-After the backoff grows exponentially', async () => {
   const h = harness([status(429)]);
   try {
-    await assert.rejects(() => riot.match.byId('europe', MATCH));
+    await assert.rejects(() => riot.match.byId(h.route, MATCH));
     assert.deepEqual(h.delays, [1000, 2000, 4000]);
   } finally {
     restore();
@@ -167,7 +187,7 @@ test('without Retry-After the backoff grows exponentially', async () => {
 test('a 5xx is retried and recovers', async () => {
   const h = harness([status(503), json(200, { ok: true })]);
   try {
-    assert.deepEqual(await riot.match.byId('europe', MATCH), { ok: true });
+    assert.deepEqual(await riot.match.byId(h.route, MATCH), { ok: true });
     assert.equal(h.calls.length, 2);
   } finally {
     restore();
@@ -177,7 +197,7 @@ test('a 5xx is retried and recovers', async () => {
 test('a transport failure is retried, not escaped', async () => {
   const h = harness([transportFail('ECONNRESET'), json(200, { ok: true })]);
   try {
-    assert.deepEqual(await riot.match.byId('europe', MATCH), { ok: true });
+    assert.deepEqual(await riot.match.byId(h.route, MATCH), { ok: true });
     assert.equal(h.calls.length, 2);
   } finally {
     restore();
@@ -185,10 +205,10 @@ test('a transport failure is retried, not escaped', async () => {
 });
 
 test('a persistent transport failure surfaces the CAUSE, not "fetch failed"', async () => {
-  harness([transportFail('UND_ERR_CONNECT_TIMEOUT')]);
+  const h = harness([transportFail('UND_ERR_CONNECT_TIMEOUT')]);
   try {
     await assert.rejects(
-      () => riot.match.byId('europe', MATCH),
+      () => riot.match.byId(h.route, MATCH),
       (e: unknown) => {
         assert.ok(e instanceof RiotApiError);
         assert.equal((e as RiotErr).status, 503);
@@ -207,7 +227,7 @@ test('a persistent transport failure surfaces the CAUSE, not "fetch failed"', as
 test('a non-retryable 4xx fails immediately', async () => {
   const h = harness([status(403)]);
   try {
-    await assert.rejects(() => riot.match.byId('europe', MATCH), RiotApiError);
+    await assert.rejects(() => riot.match.byId(h.route, MATCH), RiotApiError);
     assert.equal(h.calls.length, 1, '403 must not burn the retry budget');
     assert.deepEqual(h.delays, [], 'and must not sleep');
   } finally {
@@ -221,7 +241,7 @@ test('a cache hit short-circuits the network entirely', async () => {
   const h = harness([json(200, { from: 'network' })]);
   cacheStore = JSON.stringify({ from: 'cache' });
   try {
-    assert.deepEqual(await riot.match.byId('europe', MATCH), { from: 'cache' });
+    assert.deepEqual(await riot.match.byId(h.route, MATCH), { from: 'cache' });
     assert.equal(h.calls.length, 0, 'a cached value must not spend a Riot call');
   } finally {
     restore();
@@ -229,21 +249,25 @@ test('a cache hit short-circuits the network entirely', async () => {
 });
 
 test('a successful response is cached under the endpoint TTL', async () => {
-  harness([json(200, { ok: true })]);
+  const h = harness([json(200, { ok: true })]);
   try {
-    await riot.match.byId('europe', MATCH);
+    await riot.match.byId(h.route, MATCH);
     assert.ok(lastSet, 'expected a cache write');
     assert.equal(lastSet!.ttl, 60 * 60 * 24 * 30, 'match detail is immutable — 30 days');
-    assert.match(lastSet!.key, /^riot:cache:https:\/\/europe\./);
+    assert.equal(
+      lastSet!.key,
+      `riot:cache:https://${h.route}.api.riotgames.com/tft/match/v1/matches/${MATCH}`,
+      'the cache key is the full request URL, so two regions never collide',
+    );
   } finally {
     restore();
   }
 });
 
 test('an error response is NOT cached', async () => {
-  harness([status(500)]);
+  const h = harness([status(500)]);
   try {
-    await assert.rejects(() => riot.match.byId('europe', MATCH));
+    await assert.rejects(() => riot.match.byId(h.route, MATCH));
     assert.equal(lastSet, null, 'a failure must never poison the cache');
   } finally {
     restore();
@@ -264,7 +288,7 @@ test('a malformed id throws before any request is made', () => {
   try {
     for (const bad of ['../../riot/account/v1', 'EUW1_1?x=1', 'EUW1_1&x=1', '', 'a'.repeat(200)]) {
       assert.throws(
-        () => riot.match.byId('europe', bad),
+        () => riot.match.byId(h.route, bad),
         (e: unknown) => {
           assert.ok(e instanceof RiotApiError, `expected RiotApiError for ${JSON.stringify(bad)}`);
           assert.equal((e as RiotErr).status, 400);
@@ -286,7 +310,7 @@ test('a missing API key fails before the network, not at Riot', async () => {
   const h = harness([json(200, { ok: true })]);
   try {
     await assert.rejects(
-      () => riot.match.byId('europe', MATCH),
+      () => riot.match.byId(h.route, MATCH),
       (e: unknown) => {
         assert.ok(e instanceof RiotApiError);
         assert.equal((e as RiotErr).status, 500);
