@@ -82,7 +82,7 @@ scripts/
 ```
 
 ### Testing & CI
-`npm test` is `tsx --test "src/**/*.test.ts"` — a GLOB since 2026-08-22, so a new `*.test.ts` anywhere under `src/` is picked up instead of being silently skipped (it used to name two files explicitly). **78 tests:**
+`npm test` is `tsx --test "src/**/*.test.ts"` — a GLOB since 2026-08-22, so a new `*.test.ts` anywhere under `src/` is picked up instead of being silently skipped (it used to name two files explicitly). **93 tests:**
 
 | file | covers |
 |---|---|
@@ -90,6 +90,7 @@ scripts/
 | `config/env.test.ts` | boot validation — fatal vs warning tiers, per-runtime scoping, all-problems-in-one-throw |
 | `lib/riot/rate-limiter.test.ts` | window enforcement, multi-window, priority ordering, FIFO within a level — and one test that PINS THE KNOWN LIMITATION that two instances do not share a budget (audit §4, "One key, two budgets") |
 | `queue/comp-stats-math.test.ts` | every displayed number: Wilson bounds, SEM, shrinkage (a 1-game win must not outscore a 400-game comp), tier bands, dynamic cutoffs |
+| `server/admin-auth.test.ts` | the token contract: forgery (a valid signature is NOT enough without a numeric `exp`), tampering, malformed input, expiry, secret rotation, and password compare. One test PINS THE KNOWN GAP that a password change does not revoke live sessions (audit §2.1) — if that is ever fixed, that test SHOULD fail |
 
 `.github/workflows/ci.yml` runs two jobs. **check** — `typecheck`, `lint`, `test`, each with `if: always()` so one lint error still reveals whether the tests pass rather than costing a round-trip. **db-check** — Postgres 16 + Redis 7 service containers, applies every migration to an EMPTY database, then runs `scripts/_persist-check.ts` (synthetic and self-cleaning, so it needs no fixtures). That second job is what lets a DB-touching check run automatically at all, and it incidentally proves the forward-only migrations still apply from zero — verified 2026-08-22 against a throwaway database: 20/20 migrations applied, 19/19 checks passed. The `RIOT_API_KEY` there is a dummy that only satisfies the boot validator; the check makes no Riot calls.
 
@@ -291,7 +292,8 @@ Minimal single-operator admin auth. **No user table** — one password in `ADMIN
 
 | Export | Description |
 |---|---|
-| `passwordMatches(submitted)` | Constant-time compare against `ADMIN_PASSWORD` |
+| `issueToken()` / `verifyToken(token)` | **The token contract** — `base64url({exp}).hmac`, 7-day TTL. Exported (2026-08-22) because together they ARE the admin auth surface and everything else here is cookie plumbing; private, the cases that matter (forgery, tampering, expiry, secret rotation) could not be tested at all. `verifyToken` THROWS when `ADMIN_SESSION_SECRET` is unset — a missing secret is a deployment fault, not a failed login — so `isAuthed` catches it and reads as unauthenticated. Boot validation makes that unreachable in practice |
+| `passwordMatches(submitted)` | Constant-time compare against `ADMIN_PASSWORD`. Hashes both sides to a fixed length FIRST, so an attacker-controlled length can never make `timingSafeEqual` throw |
 | `startSession()` / `endSession()` | Set/clear the signed cookie (call only from a Server Action / Route Handler) |
 | `isAuthed()` | True if the request carries a valid, unexpired session |
 | `requireAdmin()` | `redirect('/admin/login')` unless authed — called by the (panel) layout, and **must** be called by any future `/api/admin/*` handler (a layout guard does not cover API routes) |
