@@ -98,7 +98,27 @@ export async function resolvePatchId(
  * back to the newest set with units.
  */
 export async function advanceCurrentPatch(): Promise<{ patch: string; changed: boolean } | null> {
-  const live = await one<{ max: number | null }>(`SELECT MAX(set_number)::int AS max FROM units`);
+  // LIVE SET = the newest set that has BOTH a catalog and observed matches.
+  //
+  // It used to be plain MAX(set_number) FROM units, which trusts the catalog
+  // alone — and the catalog can lie. CDragon publishes a stub entry for an
+  // upcoming set weeks early (traits, augments, and a handful of jungle camps
+  // with costs), so `npm run data:load` happily wrote set 18 four days before
+  // its launch. Nothing broke on the read path — static-data.ts's backstop
+  // ignores an is_current flag on a set with no units — but THIS function
+  // silently became a no-op: it looked for the newest set-18 patch, found no
+  // set-18 matches, and returned null, so the set-17 flag could never advance
+  // again. A stalled flag is invisible until a patch rolls over and the crawl
+  // is still bounded by the previous one.
+  //
+  // Requiring matches makes the derivation self-correcting. At a real set
+  // launch the catalog lands first and the live set stays put until the first
+  // game of the new set is actually ingested, which is the right moment to move.
+  const live = await one<{ max: number | null }>(
+    `SELECT MAX(u.set_number)::int AS max
+       FROM (SELECT DISTINCT set_number FROM units) u
+      WHERE EXISTS (SELECT 1 FROM matches m WHERE m.set_number = u.set_number)`,
+  );
   const setNumber = live?.max ?? null;
   if (!setNumber) return null;
 

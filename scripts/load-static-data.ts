@@ -1,5 +1,10 @@
 import 'dotenv/config';
 import { Pool } from 'pg';
+// The roster gate lives in its own module so this file and _set-readiness.ts
+// cannot disagree about when a set is loadable (this file self-runs on
+// import, so nothing can import the threshold FROM here).
+import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
+import { championsFromMap22 } from './map22-source';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -139,27 +144,82 @@ function getRarity(icon: string): 'Silver' | 'Gold' | 'Prismatic' | null {
 function pickCurrentSet(
   data: CDragonData,
   override?: number,
+  opts: { skipRosterGate?: boolean } = {},
 ): { setNumber: number; champions: CDragonChampion[]; traits: CDragonTrait[]; augmentApiNames: string[]; name?: string } {
-  // Prefer setData (mode-aware, ids match match-v1). Among entries sharing the
-  // highest set number, prefer the canonical "TFTSet{n}" mutator over variants.
+  // Prefer setData (mode-aware, ids match match-v1). Among entries sharing a set
+  // number, prefer the canonical "TFTSet{n}" mutator over mode variants
+  // (TFTSet17_PVEMODE, TFTSet17_PAIRS, TFTSetEvent5YR — all carry near-identical
+  // rosters but different augment pools).
   const candidates = (data.setData ?? []).filter(
     (s) => (s.number ?? 0) > 0 && (s.champions?.length ?? 0) > 0,
   );
+
   if (candidates.length > 0) {
-    const maxNum = override ?? Math.max(...candidates.map((s) => s.number!));
-    const sameNum = candidates.filter((s) => s.number === maxNum);
-    const chosen = sameNum.find((s) => s.mutator === `TFTSet${maxNum}`) ?? sameNum[0];
-    if (chosen) {
+    const numbers = [...new Set(candidates.map((s) => s.number!))].sort((a, b) => b - a);
+    const pickFor = (n: number): CDragonSet | undefined =>
+      canonicalEntry(candidates, n) as CDragonSet | undefined;
+
+    if (override !== undefined) {
+      const chosen = pickFor(override);
+      if (!chosen) throw new Error(`SET_NUMBER=${override} is not present in the data file`);
+      const roster = rosterSize(chosen);
+      // The bridge supplies champions from elsewhere, so an empty CDragon
+      // roster is expected rather than a reason to stop — we still want this
+      // entry for its traits and augments, which DO publish correctly.
+      if (roster < MIN_REAL_ROSTER && !opts.skipRosterGate && process.env.ALLOW_EMPTY_SET !== '1') {
+        // REFUSE rather than warn. Setting SET_NUMBER to the next set ahead of
+        // launch day is the normal way to prepare for it, so the override says
+        // "use 18 when it is ready", not "load whatever is under 18 today".
+        // Honouring it literally is how 19 jungle camps replaced a live catalog.
+        // Leaving SET_NUMBER=18 in .env and re-running daily is now a fine
+        // workflow: it refuses until Riot publishes, then loads.
+        throw new Error(
+          `SET_NUMBER=${override} is not populated yet — ${roster} rostered champions ` +
+            `(need >= ${MIN_REAL_ROSTER}). CDragon publishes traits, augments and a few ` +
+            `neutral monsters for a set well before its roster lands, and loading that ` +
+            `stub would overwrite the live catalog.
+` +
+            `  — re-run once Riot publishes the roster (nothing else to change), or
+` +
+            `  — set ALLOW_EMPTY_SET=1 to load it anyway.`,
+        );
+      }
       return {
-        setNumber: maxNum,
+        setNumber: override,
         champions: chosen.champions ?? [],
         traits: chosen.traits ?? [],
         augmentApiNames: chosen.augments ?? [],
         name: chosen.name,
       };
     }
+
+    // Newest set whose roster has actually shipped. Anything newer is reported
+    // rather than silently skipped — that line is the cue to re-run on launch day.
+    for (const n of numbers) {
+      const chosen = pickFor(n);
+      if (!chosen) continue;
+      const roster = rosterSize(chosen);
+      if (roster < MIN_REAL_ROSTER) {
+        console.warn(
+          `[data:load] Set ${n} is present but NOT YET POPULATED ` +
+            `(${roster} rostered champions, ${chosen.champions?.length ?? 0} entries total) — skipping. ` +
+            `Re-run once Riot publishes the roster, or force it with SET_NUMBER=${n}.`,
+        );
+        continue;
+      }
+      return {
+        setNumber: n,
+        champions: chosen.champions ?? [],
+        traits: chosen.traits ?? [],
+        augmentApiNames: chosen.augments ?? [],
+        name: chosen.name,
+      };
+    }
+    throw new Error(
+      `No set in the data file has a published roster (>= ${MIN_REAL_ROSTER} champions with traits). ` +
+        `Force one with SET_NUMBER=<n> if this is deliberate.`,
+    );
   }
-  
 
   // Fallback: the `sets` map keyed by set number.
   const sets = data.sets ?? {};
@@ -168,9 +228,9 @@ function pickCurrentSet(
     .filter((n) => !Number.isNaN(n));
   if (keys.length === 0) throw new Error('Could not locate any TFT set in the data file');
   const num = override ?? Math.max(...keys);
-  const s = sets[String(num)];
-  if (!s) throw new Error(`Set ${num} not present in the data file`);
-  return { setNumber: num, champions: s.champions ?? [], traits: s.traits ?? [], augmentApiNames: s.augments ?? [], name: s.name };
+  const s2 = sets[String(num)];
+  if (!s2) throw new Error(`Set ${num} not present in the data file`);
+  return { setNumber: num, champions: s2.champions ?? [], traits: s2.traits ?? [], augmentApiNames: s2.augments ?? [], name: s2.name };
 }
 
 // Splits a trait into its intro (the always-on bonus, → traits.description) and
@@ -444,7 +504,18 @@ async function main(): Promise<void> {
     data = (await res.json()) as CDragonData;
   }
 
-  const { setNumber, champions, traits, augmentApiNames, name } = pickCurrentSet(data, overrideSet);
+  // DATA_SOURCE=map22 reads champions from the game's own map data instead of
+  // CDragon's derived TFT file. See map22-source.ts for why that exists.
+  const useMap22 = process.env.DATA_SOURCE === 'map22';
+  const picked = pickCurrentSet(data, overrideSet, { skipRosterGate: useMap22 });
+  const { setNumber, traits, augmentApiNames, name } = picked;
+  const champions = useMap22 ? await championsFromMap22(setNumber) : picked.champions;
+  if (useMap22) {
+    console.log(
+      `[data:load] MAP22 BRIDGE: ${champions.length} champions from the game data ` +
+        `(CDragon's TFT file has ${picked.champions.length}); traits/items/augments still from CDragon.`,
+    );
+  }
   console.log(
     `Set ${setNumber}${name ? ` (${name})` : ''}: ${champions.length} champions, ${traits.length} traits`,
   );

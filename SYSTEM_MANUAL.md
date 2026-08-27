@@ -52,7 +52,52 @@ src/
 db/
   migrations/            Ordered *.sql, applied by `npm run db:migrate`
 scripts/
-  load-static-data.ts    CDragon static-catalog loader (`npm run data:load`)
+  load-static-data.ts    CDragon static-catalog loader (`npm run data:load`).
+                         ROSTER GATE: a set is only loaded once it has >= 20
+                         champions that are playable (cost 1-5) AND carry a
+                         trait. CDragon publishes a TFTSet{n} stub weeks early
+                         with traits, augments and a few jungle camps; loading
+                         it overwrites the live catalog. Auto-detect SKIPS an
+                         unpopulated set and says so; SET_NUMBER=<n> REFUSES
+                         (ALLOW_EMPTY_SET=1 overrides), so leaving SET_NUMBER
+                         set ahead of launch and re-running daily is safe.
+  cdragon-set.ts         The roster gate (MIN_REAL_ROSTER, rosterSize,
+                         canonicalEntry), shared by the loader and the readiness
+                         checker so they cannot disagree — the loader self-runs
+                         on import, so nothing can import the threshold from it
+  _set-readiness.ts      "Can I load the new set yet?" Probes cdragon/latest,
+                         cdragon/pbe and Riot's Data Dragon (the control: does
+                         the roster EXIST?), reports last-modified, and exits
+                         0 when loadable / 1 when not:
+                           until npx tsx scripts/_set-readiness.ts; do sleep 600;
+                           done && npm run data:load
+                         When ready it also checks the item classifiers against
+                         the new set's ids — calibrated so set 17 reports clean,
+                         because a checker that cries wolf gets ignored
+  map22-source.ts        TEMPORARY set-18 bridge. Reads champions from the game's
+                         own map data (raw.communitydragon.org/latest/game/data/
+                         maps/shipping/map22/map22.bin.json) instead of CDragon's
+                         derived TFT file, which could not parse the new format
+                         at launch. Live content only: the set-18 shop carries
+                         DA_* (74, all in Riot's Data Dragon, all in the client)
+                         and TFT18_* (19, none in Data Dragon, half with no art
+                         or name string — datamined future content, excluded).
+                         Supplies champions ONLY; traits/items/augments still
+                         come from CDragon, which publishes them correctly.
+  set18-traits.ts        AUTO-GENERATED champion-to-trait seed. That one mapping
+                         exists in NO public source (checked cdragon tft json +
+                         pbe, map22 raw, Data Dragon), so it was transcribed from
+                         the client and resolved against real ids.
+  _gen-set18-traits.ts   Regenerates the seed from a hand-written trait list.
+                         Resolves display names against map22 + Data Dragon +
+                         CDragon and reports anything that fails rather than
+                         dropping it. Derives the Avatar rule (each Lux variant
+                         is Avatar + the trait in its display name) and Rival
+                         (Kha'Zix/Rengar) instead of hand-typing them.
+
+  USAGE while CDragon is behind:
+    DATA_SOURCE=map22 SET_NUMBER=18 npm run data:load
+  DELETE all three once _set-readiness.ts reports READY.
   merge-eval.ts          Read-only Stage-6 merge replay + labeled-pairs eval (`npm run merge:eval`)
   merge-eval-pairs.json  Hand-labeled must-merge / must-split comp pairs (the /photos golden set)
   drain-active.ts        Post-crash cleanup: clears stale BullMQ "active" jobs + running ingestion_jobs rows
