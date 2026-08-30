@@ -74,30 +74,6 @@ scripts/
                          When ready it also checks the item classifiers against
                          the new set's ids — calibrated so set 17 reports clean,
                          because a checker that cries wolf gets ignored
-  map22-source.ts        TEMPORARY set-18 bridge. Reads champions from the game's
-                         own map data (raw.communitydragon.org/latest/game/data/
-                         maps/shipping/map22/map22.bin.json) instead of CDragon's
-                         derived TFT file, which could not parse the new format
-                         at launch. Live content only: the set-18 shop carries
-                         DA_* (74, all in Riot's Data Dragon, all in the client)
-                         and TFT18_* (19, none in Data Dragon, half with no art
-                         or name string — datamined future content, excluded).
-                         Supplies champions ONLY; traits/items/augments still
-                         come from CDragon, which publishes them correctly.
-  set18-traits.ts        AUTO-GENERATED champion-to-trait seed. That one mapping
-                         exists in NO public source (checked cdragon tft json +
-                         pbe, map22 raw, Data Dragon), so it was transcribed from
-                         the client and resolved against real ids.
-  _gen-set18-traits.ts   Regenerates the seed from a hand-written trait list.
-                         Resolves display names against map22 + Data Dragon +
-                         CDragon and reports anything that fails rather than
-                         dropping it. Derives the Avatar rule (each Lux variant
-                         is Avatar + the trait in its display name) and Rival
-                         (Kha'Zix/Rengar) instead of hand-typing them.
-
-  USAGE while CDragon is behind:
-    DATA_SOURCE=map22 SET_NUMBER=18 npm run data:load
-  DELETE all three once _set-readiness.ts reports READY.
   merge-eval.ts          Read-only Stage-6 merge replay + labeled-pairs eval (`npm run merge:eval`)
   merge-eval-pairs.json  Hand-labeled must-merge / must-split comp pairs (the /photos golden set)
   drain-active.ts        Post-crash cleanup: clears stale BullMQ "active" jobs + running ingestion_jobs rows

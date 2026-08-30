@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { stat } from 'node:fs/promises';
 import {
   MIN_REAL_ROSTER,
   rosterSize,
@@ -132,22 +131,6 @@ function classifierReport(items: { apiName?: string; name?: string }[], set: num
     console.log(`READY — cdragon/latest has a full roster (>= ${MIN_REAL_ROSTER}).`);
     console.log('  run: npm run data:load');
 
-    // The bridge is meant to die the moment this goes green. Remind here rather
-    // than only in the docs, because this is the one command anyone actually
-    // runs while waiting — and a temporary workaround nobody is told to
-    // remove is how it becomes permanent.
-    const bridge = ['scripts/map22-source.ts', 'scripts/set18-traits.ts', 'scripts/_gen-set18-traits.ts'];
-    const present: string[] = [];
-    for (const f of bridge) {
-      try { await stat(f); present.push(f); } catch { /* already gone */ }
-    }
-    if (present.length) {
-      console.log(`
-  THE TEMPORARY BRIDGE CAN NOW GO. Delete:`);
-      for (const f of present) console.log(`    ${f}`);
-      console.log('    ...and drop DATA_SOURCE=map22 from the load command.');
-      console.log('    (See the map22-source.ts header for what it was working around.)');
-    }
     const rep = classifierReport(live.data.items ?? [], set);
     console.log(`\nitem classifiers over ${rep.total} set-${set} items:`);
     console.log(`  emblems ${rep.emblems.length} · artifacts ${rep.artifacts.length} · radiants ${rep.radiants.length}`);

@@ -4,7 +4,6 @@ import { Pool } from 'pg';
 // cannot disagree about when a set is loadable (this file self-runs on
 // import, so nothing can import the threshold FROM here).
 import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
-import { championsFromMap22 } from './map22-source';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -144,7 +143,6 @@ function getRarity(icon: string): 'Silver' | 'Gold' | 'Prismatic' | null {
 function pickCurrentSet(
   data: CDragonData,
   override?: number,
-  opts: { skipRosterGate?: boolean } = {},
 ): { setNumber: number; champions: CDragonChampion[]; traits: CDragonTrait[]; augmentApiNames: string[]; name?: string } {
   // Prefer setData (mode-aware, ids match match-v1). Among entries sharing a set
   // number, prefer the canonical "TFTSet{n}" mutator over mode variants
@@ -163,10 +161,7 @@ function pickCurrentSet(
       const chosen = pickFor(override);
       if (!chosen) throw new Error(`SET_NUMBER=${override} is not present in the data file`);
       const roster = rosterSize(chosen);
-      // The bridge supplies champions from elsewhere, so an empty CDragon
-      // roster is expected rather than a reason to stop — we still want this
-      // entry for its traits and augments, which DO publish correctly.
-      if (roster < MIN_REAL_ROSTER && !opts.skipRosterGate && process.env.ALLOW_EMPTY_SET !== '1') {
+      if (roster < MIN_REAL_ROSTER && process.env.ALLOW_EMPTY_SET !== '1') {
         // REFUSE rather than warn. Setting SET_NUMBER to the next set ahead of
         // launch day is the normal way to prepare for it, so the override says
         // "use 18 when it is ready", not "load whatever is under 18 today".
@@ -504,18 +499,9 @@ async function main(): Promise<void> {
     data = (await res.json()) as CDragonData;
   }
 
-  // DATA_SOURCE=map22 reads champions from the game's own map data instead of
-  // CDragon's derived TFT file. See map22-source.ts for why that exists.
-  const useMap22 = process.env.DATA_SOURCE === 'map22';
-  const picked = pickCurrentSet(data, overrideSet, { skipRosterGate: useMap22 });
+  const picked = pickCurrentSet(data, overrideSet);
   const { setNumber, traits, augmentApiNames, name } = picked;
-  const champions = useMap22 ? await championsFromMap22(setNumber) : picked.champions;
-  if (useMap22) {
-    console.log(
-      `[data:load] MAP22 BRIDGE: ${champions.length} champions from the game data ` +
-        `(CDragon's TFT file has ${picked.champions.length}); traits/items/augments still from CDragon.`,
-    );
-  }
+  const champions = picked.champions;
   console.log(
     `Set ${setNumber}${name ? ` (${name})` : ''}: ${champions.length} champions, ${traits.length} traits`,
   );
