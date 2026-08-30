@@ -70,10 +70,31 @@ export function bucketLabel(bucket: string): string {
   return BUCKET_LABELS[bucket] ?? bucket.charAt(0).toUpperCase() + bucket.slice(1);
 }
 
-/** True when a tier is inside the configured crawl scope. Compared on the Riot
- *  tier name so `CRAWL_TIERS` stays human-readable ('challenger,grandmaster'). */
+/**
+ * True when a tier is inside the configured crawl scope. Compared on the Riot
+ * tier name so `CRAWL_TIERS` stays human-readable ('challenger,grandmaster').
+ *
+ * Two scope tokens exist beyond the tier names, and they are what make a crawl
+ * possible AT THE START OF A SET:
+ *
+ *   'all'       — no gate. Every candidate is crawled and bucketed by whatever
+ *                 tier resolves.
+ *   'unranked'  — a candidate with NO resolved tier is in scope. Their boards
+ *                 bucket as 'unknown', which is an honest label rather than a
+ *                 placeholder (see the header of this file).
+ *
+ * WHY THIS IS NEEDED. On set-18 launch day all three EUW apex ladders returned
+ * ZERO entries — the ranked ladder resets, so for the first days of a set there
+ * is no Master+ population to seed from or gate on, and almost every player is
+ * unranked until placements finish. An apex-only scope therefore crawls nothing
+ * at exactly the moment the meta is forming and the data is most wanted. Widen
+ * the scope for that window, then narrow it again once the ladder fills — the
+ * 'unknown' boards stay selectable as their own bucket either way, so nothing
+ * collected during the window contaminates a rank-verified one.
+ */
 export function tierInScope(tier: string | null | undefined, scope: readonly string[]): boolean {
-  if (!tier) return false;
+  if (scope.some((s) => s.toLowerCase() === 'all')) return true;
+  if (!tier) return scope.some((s) => s.toLowerCase() === 'unranked');
   const t = tier.toUpperCase();
   return scope.some((s) => s.toUpperCase() === t);
 }

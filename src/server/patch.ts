@@ -13,6 +13,29 @@ export function patchFromVersion(gameVersion: string): string | null {
 }
 
 /**
+ * Patch string for a set whose `game_version` carries no version at all.
+ *
+ * Set 18 shipped on the Unreal engine with `game_version` literally reading
+ * "TFT Unreal Version ?.?.?.?" — no digits, so patchFromVersion returns null.
+ * Left there, every set-18 match stores `patch_id = NULL`, and since
+ * `comp_stats.patch_id` is NOT NULL those boards can never roll up: they land in
+ * the database and are invisible forever. A set-scoped placeholder keeps them
+ * groupable and says plainly that the patch is unknown, rather than guessing one.
+ *
+ * The row is labelled so the placeholder is identifiable in the patch selector
+ * and in the database, and advanceCurrentPatch prefers ANY real patch over it
+ * (see there) — which matters because the client version for set 18 is 16.x,
+ * numerically BELOW "18.0", so plain numeric ordering would let the placeholder
+ * outrank the real patches that eventually replace it.
+ */
+export function placeholderPatch(setNumber: number): string {
+  return `${setNumber}.0`;
+}
+
+/** Label written on a placeholder patches row. Also the marker the selector reads. */
+export const UNVERSIONED_LABEL = 'Unversioned';
+
+/**
  * Resolves the patches row id for (setNumber, derived patch), creating it on
  * first sight. Returns null when the version string has no parseable patch.
  * Runs on a transaction-scoped client so callers can fold it into their own
@@ -38,8 +61,8 @@ export async function resolvePatchId(
   setNumber: number,
   gameVersion: string,
 ): Promise<number | null> {
-  const patch = patchFromVersion(gameVersion);
-  if (!patch) return null;
+  const parsed = patchFromVersion(gameVersion);
+  const patch = parsed ?? placeholderPatch(setNumber);
 
   const SELECT_ID = `SELECT id FROM patches WHERE set_number = $1 AND patch = $2`;
 
@@ -47,11 +70,11 @@ export async function resolvePatchId(
   if (existing.rows[0]) return existing.rows[0].id;
 
   const inserted = await client.query<{ id: number }>(
-    `INSERT INTO patches (set_number, patch)
-     VALUES ($1, $2)
+    `INSERT INTO patches (set_number, patch, label)
+     VALUES ($1, $2, $3)
      ON CONFLICT (set_number, patch) DO NOTHING
      RETURNING id`,
-    [setNumber, patch],
+    [setNumber, patch, parsed ? null : UNVERSIONED_LABEL],
   );
   if (inserted.rows[0]) return inserted.rows[0].id;
 
@@ -133,6 +156,11 @@ export async function advanceCurrentPatch(): Promise<{ patch: string; changed: b
   // no rows is NULL, i.e. no filter — and pointed the patch selector at a patch
   // with no comp_stats. The EXISTS is an index probe (matches_patch_idx).
   //
+  // A REAL PATCH ALWAYS BEATS THE PLACEHOLDER, and that cannot be left to the
+  // numeric sort: the client version for set 18 is 16.x, which is numerically
+  // BELOW the "18.0" placeholder, so ordering on the number alone would pin the
+  // flag to the placeholder forever once real versions started arriving.
+  //
   // Numeric, not lexical — "16.10" must sort after "16.9". The regex guard
   // keeps split_part(...)::int from throwing on any row that predates
   // patchFromVersion's format (the 0004 backfill derived the same shape, but a
@@ -143,10 +171,11 @@ export async function advanceCurrentPatch(): Promise<{ patch: string; changed: b
       WHERE p.set_number = $1
         AND p.patch ~ '^[0-9]+[.][0-9]+$'
         AND EXISTS (SELECT 1 FROM matches m WHERE m.patch_id = p.id)
-      ORDER BY split_part(p.patch, '.', 1)::int DESC,
+      ORDER BY (p.patch <> $2) DESC,
+               split_part(p.patch, '.', 1)::int DESC,
                split_part(p.patch, '.', 2)::int DESC
       LIMIT 1`,
-    [setNumber],
+    [setNumber, placeholderPatch(setNumber)],
   );
   if (!winner) return null;
 
