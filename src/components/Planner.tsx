@@ -227,7 +227,7 @@ export default function Planner({ data }: { data: PlannerData }) {
     else if (payload.startsWith('move:')) moveCell(Number(payload.slice(5)), target);
   };
 
-  const { showTooltip, hideTooltip, openModal } = useGameData();
+  const { showTooltip, hideTooltip } = useGameData();
 
   const selUnit = selected != null && board[selected] ? unitsById.get(board[selected]!.unitId) : null;
 

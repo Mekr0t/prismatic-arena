@@ -33,3 +33,6 @@ Thumbs.db
 photos/
 .claude/
 .CLAUDE.md
+
+# Working notes kept on disk, not published
+AUDIT-*.md

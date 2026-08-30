@@ -894,8 +894,8 @@ export async function getTierList(q: TierListQuery = {}): Promise<TierListVM> {
 // parts. The 'comps' tag is declared anyway so that route can be added without
 // touching these call sites.
 //
-// The uncached functions stay exported: scripts/_tier-smoke.ts and the merge
-// tooling want a direct read, and unstable_cache needs a request context.
+// The uncached functions stay exported: the merge tooling wants a direct read,
+// and unstable_cache needs a request context.
 
 const COMPS_CACHE_TTL = numEnv(process.env.COMPS_CACHE_TTL_S, 300);
 

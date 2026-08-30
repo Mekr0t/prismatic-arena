@@ -102,10 +102,6 @@ scripts/
   merge-eval-pairs.json  Hand-labeled must-merge / must-split comp pairs (the /photos golden set)
   drain-active.ts        Post-crash cleanup: clears stale BullMQ "active" jobs + running ingestion_jobs rows
   reset-queue.ts         Obliterates every BullMQ queue (dev reset)
-  _pipeline.ts           One-off: cluster → rollup → merge → trend-tier directly, no BullMQ (temp)
-  _apply-merge.ts        One-off: run the merge stage directly (temp)
-  _detail-smoke.ts       One-off: smoke-check the emblem-variant switcher (temp)
-  _tier-smoke.ts         One-off: smoke-check for empty example boards (temp)
   _persist-check.ts      persistMatch integration check against a SYNTHETIC match —
                          copy_index on duplicate units, the carry heuristic, empty
                          and multi item arrays, idempotency on a second call, and
@@ -390,7 +386,7 @@ Read-side service for the **M5 comp tier list**. Drives from `comp_stats` + `buc
 
 | Export | Description |
 |---|---|
-| `getTierListCached(q)` | **Use this from pages.** `unstable_cache` wrapper over `getTierList`, `revalidate` = `COMPS_CACHE_TTL_S` (300 s), tag `comps`. Arguments are flattened to primitives so the cache key is deterministic. TIME-based rather than tag-based because the pipeline runs in a separate process and `revalidateTag` only reaches the Next runtime from inside it; the tag is declared so a revalidate route can be added later without touching call sites. Measured production effect: `/comps` 3.80 s → 0.25 s. The uncached export stays for scripts (`_tier-smoke.ts`) and because `unstable_cache` needs a request context |
+| `getTierListCached(q)` | **Use this from pages.** `unstable_cache` wrapper over `getTierList`, `revalidate` = `COMPS_CACHE_TTL_S` (300 s), tag `comps`. Arguments are flattened to primitives so the cache key is deterministic. TIME-based rather than tag-based because the pipeline runs in a separate process and `revalidateTag` only reaches the Next runtime from inside it; the tag is declared so a revalidate route can be added later without touching call sites. Measured production effect: `/comps` 3.80 s → 0.25 s. The uncached export stays for the merge tooling and because `unstable_cache` needs a request context |
 | `getTierList(q: TierListQuery)` | → `TierListVM`. Probes available `(patch, region, rank_bucket)` combos to drive the three selectors and resolve/validate the selection (default = current patch → highest volume); pools each group's sufficient stats, tiers S→D by pooled score; the niche flag appends the below-pooled-floor groups (biggest first, capped). Returns `null` selection when nothing is clustered yet |
 | VM types (re-exported) | `TierListVM`, `TierGroupVM`, `CompRowVM`, `CompIdentityVM`, `CarryPortraitVM`, `KeyTraitChipVM`, `ExampleTeamVM`, `ExampleUnitVM`, `ExampleTraitVM`, `ExampleItemVM`, `SelectorOptions`, `PatchOption`, `TierListSelection`, `TierListQuery` |
 
