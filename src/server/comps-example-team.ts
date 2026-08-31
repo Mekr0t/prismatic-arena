@@ -14,6 +14,7 @@
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
 import { COMPONENT_ITEMS, isRngAcquiredItem } from './item-filters';
+import { resolveVariants, pickVariants } from './variant-resolve';
 import type {
   ExampleItemVM,
   ExampleUnitVM,
@@ -161,7 +162,7 @@ export async function loadExampleTeams(
   const compIds = [...groupsByComp.keys()];
   if (compIds.length === 0) return out;
 
-  const [unitRows, traitRows, itemRows] = await Promise.all([
+  const [unitRows, traitRows, itemRows, variantTallies] = await Promise.all([
     query<UnitAggRow>(
       // Per board, a unit can occupy >1 slot (the duplicate-copy augment fields a
       // second copy of a 3-star). Aggregate per board first — copies and the star
@@ -229,6 +230,8 @@ export async function loadExampleTeams(
         GROUP BY comp_id, character_id, completed`,
       [compIds, patchId, region, rankBucket, [...COMPONENT_ITEMS]],
     ),
+    // Variants Riot does not report (set 18's Lux). No-ops for sets with none.
+    resolveVariants(cat.setNumber, compIds, { patchId, region, rankBucket }),
   ]);
 
   // Per unit: how many boards contain it (for the freq threshold) and, keyed by
@@ -342,6 +345,9 @@ export async function loadExampleTeams(
       continue;
     }
     const hitTargets = new Set(g.hitTargetIds ?? []);
+    // Pooled over THIS row's comps, so the displayed Lux is the one the line
+    // most often ends up with rather than whichever member comp is smallest.
+    const variantOf = pickVariants(variantTallies, g.compIds);
 
     const unitsAcc = unitsByGroup.get(g.key);
     const units: ExampleUnitVM[] = [];
@@ -423,12 +429,16 @@ export async function loadExampleTeams(
         // One tile per copy (stars already descending, so 3★ renders before 2★).
         // Items belong to the carry copy (the highest star / most-itemized), so
         // only the first tile carries them; a duplicate spare stays item-less.
+        // Display identity only: the aggregation above keyed on the id Riot
+        // reported, so swapping here changes the tile's face without touching
+        // any of the counting that produced it.
+        const shown = variantOf.has(meta.characterId) ? cat.unit(variantOf.get(meta.characterId)!) : meta;
         for (let i = 0; i < stars.length; i += 1) {
           units.push({
-            characterId: meta.characterId,
-            name: meta.name,
-            cost: meta.cost,
-            iconUrl: meta.iconUrl,
+            characterId: shown.characterId,
+            name: shown.name,
+            cost: shown.cost,
+            iconUrl: shown.iconUrl,
             star: stars[i],
             freq,
             items: i === 0 ? items : [],

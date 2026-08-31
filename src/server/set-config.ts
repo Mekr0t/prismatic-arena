@@ -58,6 +58,34 @@ export interface SetConfig {
    *  unit has EXCEPT those in `exceptTraits` (how Avatar is expressed, since
    *  each Lux variant carries Avatar plus the one element she chose). */
   traitMultipliers: readonly TraitMultiplier[];
+  /** Units whose real identity is a VARIANT that Riot's match payload does not
+   *  report. Set 18 reports every Lux as `DA_Lux18_Base` no matter which Avatar
+   *  element she chose — 231 boards, zero variant ids — so the displayed board
+   *  would always show a generic Lux.
+   *
+   *  The choice is still recoverable: Avatar doubles the chosen trait, so that
+   *  trait is over-counted in Riot's own `participant_traits` relative to what
+   *  the board's units explain. Measured over 30 Lux boards, exactly one trait
+   *  was over-counted on every single one — no ambiguous boards, no misses.
+   *
+   *  DISPLAY ONLY. This deliberately does NOT reach comp signatures: which Lux
+   *  you hit is mostly luck rather than a planned line, and she clears several
+   *  breakpoints alone, so splitting comps on it would fragment the data for a
+   *  distinction players do not plan around. */
+  inferredVariants: readonly InferredVariant[];
+}
+
+export interface InferredVariant {
+  /** The id Riot reports for every member of the family. */
+  base: string;
+  /** POSIX pattern (Postgres `~`) matching the family's real ids. Set 18
+   *  spells them two ways, `DA_18_Lux_*` and `DA_Lux18_*`. */
+  familyPattern: string;
+  /** The trait every variant shares, which therefore never identifies one. */
+  markerTrait: string;
+  /** Over-count that marks the chosen trait. 2 for a doubling mechanic; an
+   *  emblem only ever adds 1, so it cannot produce a false positive. */
+  minDelta: number;
 }
 
 export interface TraitMultiplier {
@@ -114,6 +142,9 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
     mechanicItemPatterns: [/AnimaSquadItem_Tier/i, /EkkoOffering_Anomaly/i],
     itemIdPrefixes: ['TFT17_Item_'],
     traitMultipliers: [], // set 17 has no unit that counts more than once
+    // Set 17's equivalent (Miss Fortune's Choose Trait) needs no inference —
+    // Riot reports the chosen trait directly.
+    inferredVariants: [],
   },
 
   // ── Set 18 ─────────────────────────────────────────────────────────────────
@@ -137,6 +168,14 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
       // is the one that doubles, so match on '*' minus Avatar itself. Base Lux
       // (DA_Lux18_Base) carries only Avatar and correctly doubles nothing.
       { unit: /^DA_(18_Lux_|Lux18_)/, traits: '*', exceptTraits: ['DA_18_LuxUniqueTrait'], count: 2 },
+    ],
+    inferredVariants: [
+      {
+        base: 'DA_Lux18_Base',
+        familyPattern: '^DA_(18_Lux_|Lux18_)',
+        markerTrait: 'DA_18_LuxUniqueTrait',
+        minDelta: 2,
+      },
     ],
   },
 };
@@ -222,6 +261,11 @@ export function traitContribution(setNumber: number, unitId: string, traitId: st
     if (m.traits === '*' || m.traits.includes(traitId)) return m.count;
   }
   return 1;
+}
+
+/** Families whose displayed variant must be inferred; empty for most sets. */
+export function inferredVariants(setNumber: number): readonly InferredVariant[] {
+  return config(setNumber)?.inferredVariants ?? [];
 }
 
 /** Set-mechanic special item? Union across all configured sets — item ids are
