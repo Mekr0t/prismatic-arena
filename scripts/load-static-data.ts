@@ -7,6 +7,7 @@ import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
 import { statIconKey } from '@/lib/stat-icons';
 import { keywordFor } from '@/lib/keywords';
 import { emblemGrantDescription, traitNameFromEmblem, EMBLEM_BONUSES } from '@/lib/emblems';
+import { lookupBinField } from '@/lib/bin-hash';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -347,6 +348,11 @@ const ICON_TEXT_FALLBACK: Record<string, string> = {
 // per row would bury the signal it exists to give.
 const unresolvedKeywords = new Set<string>();
 
+// Variable names that resolved neither by name nor by hash — i.e. the value is
+// genuinely not published. Reported once at the end so the size of the gap is
+// visible rather than silently rendering as a missing number mid-sentence.
+const unresolvedVars = new Set<string>();
+
 function resolveDesc(
   desc: string | null | undefined,
   effects: Record<string, number | string> | null | undefined,
@@ -361,10 +367,15 @@ function resolveDesc(
     const varKey = multMatch ? multMatch[1] : raw;
     const multiplier = multMatch ? parseFloat(multMatch[2]) : 1.0;
 
-    const entry = Object.entries(eff).find(([k]) => k.toLowerCase() === varKey.toLowerCase());
-    if (!entry) return ''; // unresolvable (obfuscated key, Modified*, etc.) — hide rather than show raw name
+    // Direct name first, then the FNV-1a hash CDragon publishes when it cannot
+    // reverse a field name (see lib/bin-hash.ts). Set 18 keys most trait
+    // variables that way, which is why its breakpoints lost their numbers.
+    const val = lookupBinField(eff, varKey);
+    if (val === undefined) {
+      unresolvedVars.add(varKey);
+      return ''; // genuinely absent — hide rather than show the raw name
+    }
 
-    const val = entry[1];
     if (typeof val === 'string') {
       // Ability values are stored as full-precision strings (possibly "41/62/644" for multi-star).
       // Apply the multiplier here, since buildAbilityEffectsMap stores raw values.
@@ -379,7 +390,13 @@ function resolveDesc(
         return sig === Math.floor(sig) ? String(Math.floor(sig)) : String(sig);
       }).join('/');
     }
-    const result = val * multiplier;
+    // Riot stores these as 32-bit floats, so a clean decimal arrives widened and
+    // slightly wrong: Adaptor's 35% is published as 0.3499999940395355, which
+    // ×100 is not an integer and rendered "35.0%" between a "25%" and a "50%".
+    // Six significant figures is past float32's ~7-digit precision, so it
+    // recovers the intended value while leaving genuine fractions alone —
+    // 33.333… still formats as 33.3, and large values keep their magnitude.
+    const result = parseFloat((val * multiplier).toPrecision(6));
     return result === Math.floor(result) ? String(Math.floor(result)) : result.toFixed(1);
   });
 
@@ -648,6 +665,16 @@ async function main(): Promise<void> {
   for (const c of champions.slice(0, 3)) {
     const traitApis = (c.traits ?? []).map((n) => traitNameToApi.get(n) ?? n);
     console.log(`  ${c.apiName} -> ${c.name} (cost ${c.cost}) traits=[${traitApis.join(', ')}]`);
+  }
+  if (unresolvedVars.size) {
+    const shown = [...unresolvedVars].slice(0, 12);
+    console.warn(
+      `[data:load] ${unresolvedVars.size} variable name(s) had no published value ` +
+        `and rendered as a gap: ${shown.join(', ')}${unresolvedVars.size > shown.length ? ', …' : ''}
+` +
+        `  These resolved neither by name nor by CDragon's {hash} key, so the ` +
+        `number is absent upstream rather than mismatched here.`,
+    );
   }
   if (unresolvedKeywords.size) {
     console.warn(

@@ -11,9 +11,11 @@
 // directly and are marked below.
 //
 // The atlas declares itself 256 x 512 (`mTextureSourceResolutionWidth/Height`),
-// and the CSS positions every icon against those dimensions. If Riot ever
-// re-lays-out the sheet, every icon silently becomes the wrong glyph rather than
-// breaking loudly — `npm run icons:check` exists to catch exactly that.
+// and the renderer positions every icon against those dimensions. KNOWN RISK: if
+// Riot ever re-lays-out the sheet, every icon silently becomes a real-but-wrong
+// glyph rather than breaking loudly. `stat-icons.test.ts` pins the rects against
+// each other (bounds, native sizes, no two sharing a rect), which catches an
+// editing mistake here but cannot detect the sheet moving underneath us.
 
 export const ATLAS_W = 256;
 export const ATLAS_H = 512;
@@ -71,6 +73,12 @@ const ALIASES: Record<string, StatIconKey> = {
   scalerange: 'range', scaleda: 'damageamp', scalesv: 'omnivamp',
   scaledr: 'damagereduction', scalehpregen: 'healthregen',
   tftmanaregen: 'manaregen',
+  // Four more CDragon spells that were silently dropping their glyph. The
+  // manaregen pair is why Invoker's rows rendered "1 | 3" instead of the
+  // droplets the game shows; scaleCritMult reuses the crit glyph because the
+  // atlas has one crit icon, not separate chance/damage ones.
+  scalecrit: 'crit', scalecritmult: 'crit',
+  scalemana: 'mana', scalemanaregen: 'manaregen',
   // Unit stat grid labels
   ad: 'ad', ap: 'ap', as: 'as', hp: 'health', armor: 'armor', mr: 'mr',
   range: 'range', mana: 'mana', 'crit chance': 'crit',
