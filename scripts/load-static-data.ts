@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
 import { statIconKey } from '@/lib/stat-icons';
 import { keywordFor } from '@/lib/keywords';
+import { emblemGrantDescription } from '@/lib/emblems';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -596,8 +597,25 @@ async function main(): Promise<void> {
       );
     }
 
+    // Display names of THIS set's traits, for the emblem fallback below.
+    const liveTraitNames = new Set(
+      traits.map((t) => (t.name ?? '').trim().toLowerCase()).filter(Boolean),
+    );
+    let emblemsFilledIn = 0;
+
     for (const it of items) {
       const stats = itemStats(it.effects);
+      // CDragon's own text always wins; the fallback only fills a hole. That
+      // way the day Riot publishes set-18 emblem descriptions, they take over
+      // with no code change and nothing to remove.
+      let description = resolveDesc(it.desc, it.effects);
+      if (!description) {
+        const fallback = emblemGrantDescription(it.name, liveTraitNames);
+        if (fallback) {
+          description = fallback;
+          emblemsFilledIn++;
+        }
+      }
       await client.query(
         `INSERT INTO items (set_number, item_id, name, icon_path, composition, description, stats)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -607,8 +625,15 @@ async function main(): Promise<void> {
                stats = EXCLUDED.stats`,
         [
           setNumber, it.apiName, it.name, it.icon ?? null, it.composition ?? [],
-          resolveDesc(it.desc, it.effects), JSON.stringify(stats),
+          description, JSON.stringify(stats),
         ],
+      );
+    }
+    if (emblemsFilledIn) {
+      console.log(
+        `[data:load] ${emblemsFilledIn} emblem(s) had no published description; ` +
+          `filled in the trait grant. The per-emblem bonus line is not published ` +
+          `for this set and is deliberately not guessed.`,
       );
     }
 

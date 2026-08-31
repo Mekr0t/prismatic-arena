@@ -4,6 +4,7 @@ import type { PlannerData, PlannerUnit, PlannerTrait, PlannerItem, Breakpoint } 
 import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
 import { currentSet } from './static-data';
 import { isSetItem, traitContribution } from './set-config';
+import { traitNameFromEmblem } from '@/lib/emblems';
 
 const TEAMPLANNER_URL =
   'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/tftchampions-teamplanner.json';
@@ -98,7 +99,7 @@ export async function getPlannerData(): Promise<PlannerData> {
       kind = 'component';
     } else if (/Emblem/i.test(id) || /Emblem/i.test(r.name)) {
       kind = 'emblem';
-      trait = traitIdByName.get(r.name.replace(/\s*Emblem\s*$/i, '').trim().toLowerCase());
+      trait = traitIdByName.get((traitNameFromEmblem(r.name) ?? '').toLowerCase());
     } else if (Array.isArray(r.composition) && r.composition.length === 2) {
       kind = 'craftable';
     } else if (isArtifactItem(id)) {
