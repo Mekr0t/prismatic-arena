@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 // import, so nothing can import the threshold FROM here).
 import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
 import { statIconKey } from '@/lib/stat-icons';
+import { keywordFor } from '@/lib/keywords';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -375,6 +376,11 @@ const ICON_TEXT_FALLBACK: Record<string, string> = {
   set14ampicon: 'Meeps', // reused icon asset; only Meeple uses it (the Meep count)
 };
 
+// Keyword references we could not resolve, reported once at the end of the load
+// rather than per occurrence — 16 items reference Precision alone, and a warning
+// per row would bury the signal it exists to give.
+const unresolvedKeywords = new Set<string>();
+
 function resolveDesc(
   desc: string | null | undefined,
   effects: Record<string, number | string> | null | undefined,
@@ -444,7 +450,22 @@ function resolveDesc(
       const label = ICON_TEXT_FALLBACK[String(name).toLowerCase()];
       return label ? `«scale:${label}»` : '';
     })
-    .replace(/\{\{[^}]+\}\}/g, '')
+    // `{{TFT_Keyword_X}}` is a reference to a definition that lives in the game
+    // client rather than the published data. Dropping it wholesale is why
+    // Jeweled Gauntlet read "Gain Precision." and stopped, while Morellonomicon
+    // — which inlines its own rules block — explained Burn and Wound. Resolve
+    // the ones we know into the SAME shape CDragon uses for an inline block, so
+    // both paths render identically.
+    .replace(/\{\{([^}]+)\}\}/g, (_m, ref: string) => {
+      const kw = keywordFor(ref.trim());
+      if (kw) return `«rules:«bold:${kw.name}»: ${kw.text}»`;
+      // Not a keyword (item-specific template refs like TFT13_ChemBaronOnlyItem
+      // also use this syntax), or a keyword we have no definition for. Record
+      // the latter so a new one surfaces at load time instead of silently
+      // becoming a sentence that references something never explained.
+      if (/^TFT_Keyword_/i.test(ref.trim())) unresolvedKeywords.add(ref.trim());
+      return '';
+    })
     .replace(/\[\[[^\]]+\]\]/g, '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/(?<!\d)%/g, '')            // stray % from unresolvable vars (keeps "244%")
@@ -617,6 +638,15 @@ async function main(): Promise<void> {
   for (const c of champions.slice(0, 3)) {
     const traitApis = (c.traits ?? []).map((n) => traitNameToApi.get(n) ?? n);
     console.log(`  ${c.apiName} -> ${c.name} (cost ${c.cost}) traits=[${traitApis.join(', ')}]`);
+  }
+  if (unresolvedKeywords.size) {
+    console.warn(
+      `[data:load] ${unresolvedKeywords.size} keyword reference(s) have no definition ` +
+        `and were dropped: ${[...unresolvedKeywords].join(', ')}
+` +
+        `  Add them to src/lib/keywords.ts — the text they reference lives in the ` +
+        `client, so the sentence citing them reads as a dead end without it.`,
+    );
   }
   console.log('Static data loaded.');
 }
