@@ -11,6 +11,8 @@
 // (flattened) descriptions still display correctly.
 
 import React from 'react';
+import { StatIcon } from '@/components/StatIcon';
+import { STAT_ICONS, type StatIconKey } from '@/lib/stat-icons';
 
 const CLASS_RE = /^[a-z]+$/;
 
@@ -43,6 +45,21 @@ function parse(str: string, i: number, counter: { n: number }): { nodes: React.R
       if (colon !== -1 && CLASS_RE.test(cls)) {
         flush();
         const inner = parse(str, colon + 1, counter);
+        // «icon:key» is the one token whose CONTENT is a lookup key rather than
+        // text to render. It replaces the old «scale:AP» text labels, which the
+        // loader emitted only because we could not draw the real glyph. Both
+        // forms still parse: descriptions are resolved at load time, so every
+        // row keeps the token it was written with until the next data:load.
+        if (cls === 'icon') {
+          const key = inner.nodes.join('').trim().toLowerCase();
+          if (key in STAT_ICONS) {
+            nodes.push(<StatIcon key={`i${counter.n++}`} iconKey={key as StatIconKey} />);
+            i = inner.i;
+            continue;
+          }
+          // Unknown key: fall through to a plain span rather than rendering
+          // nothing, so a new stat shows its name instead of vanishing.
+        }
         nodes.push(
           <span key={`s${counter.n++}`} className={`rt-${cls}`}>
             {inner.nodes}
@@ -77,6 +94,10 @@ export function RichText({
 export function richToPlain(text: string | null | undefined): string {
   if (!text) return '';
   return text
+    // An icon has no text of its own, so flattening must substitute its name —
+    // otherwise a tooltip reads "deals 40 damage" with the stat silently gone.
+    .replace(/«icon:([a-z]+)»/g, (_m, k: string) =>
+      k in STAT_ICONS ? STAT_ICONS[k as StatIconKey].label : '')
     .replace(/«[a-z]+:/g, '')
     .replace(/»/g, '')
     .replace(/\s*\n+\s*/g, ' ')

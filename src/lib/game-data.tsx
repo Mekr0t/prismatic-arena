@@ -4,6 +4,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import type { LibUnit, LibTrait, LibItem, LibraryData } from '@/server/library-data';
 import { RichText, richFirstLine } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
+import { StatLabel } from '@/components/StatIcon';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -480,7 +481,7 @@ function ItemStats({ stats }: { stats: LibItem['stats'] }) {
     <div className="istat-list">
       {stats.map((s) => (
         <span key={s.label} className="istat">
-          <b>{s.value}</b> {s.label}
+          <b>{s.value}</b> <StatLabel label={s.label} />
         </span>
       ))}
     </div>

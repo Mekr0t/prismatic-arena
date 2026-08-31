@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 // cannot disagree about when a set is loadable (this file self-runs on
 // import, so nothing can import the threshold FROM here).
 import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
+import { statIconKey } from '@/lib/stat-icons';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -364,24 +365,13 @@ const RICH_TAG_CLASS: Record<string, string> = {
 };
 
 // CDragon embeds stat icons as %i:Name% next to a value to say WHAT the value is
-// / scales with. We can't render the icon, so map it to a short label emitted as
-// a «scale:LABEL» token — rendered muted (see .rt-scale), so it reads as a
-// secondary hint (Challenger "15% AS", Nami "… (AP)") rather than being mistaken
-// for a damage value in a coloured span. Unknown icons are dropped.
-const ICON_LABEL: Record<string, string> = {
-  scalead: 'AD',
-  tftbasead: 'AD',
-  scaleap: 'AP',
-  scaleas: 'AS',
-  scalehealth: 'HP',
-  scalearmor: 'Armor',
-  scalemr: 'MR',
-  scalerange: 'Range',
-  scaleda: 'Damage Amp',
-  scalesv: 'Omnivamp',
-  scaledr: 'Damage Reduction',
-  scalehpregen: 'HP Regen',
-  tftmanaregen: 'Mana Regen',
+// / scales with. These now resolve to the REAL game glyph: `statIconKey` maps the
+// CDragon name to an atlas entry (src/lib/stat-icons.ts) and we emit «icon:key»,
+// which rich-text.tsx draws. Previously this emitted a «scale:AP» text label
+// purely because we could not draw the icon.
+//
+// Names with no glyph keep a muted text label — better a word than nothing.
+const ICON_TEXT_FALLBACK: Record<string, string> = {
   set14ampicon: 'Meeps', // reused icon asset; only Meeple uses it (the Meep count)
 };
 
@@ -449,7 +439,9 @@ function resolveDesc(
   let text = out
     .replace(/<[^>]+>/g, '')             // unwrap unknown/structural tags (maintext, showif, li, …)
     .replace(/%i:([^%]+)%/g, (_m, name: string) => {
-      const label = ICON_LABEL[String(name).toLowerCase()];
+      const key = statIconKey(String(name));
+      if (key) return `«icon:${key}»`;
+      const label = ICON_TEXT_FALLBACK[String(name).toLowerCase()];
       return label ? `«scale:${label}»` : '';
     })
     .replace(/\{\{[^}]+\}\}/g, '')

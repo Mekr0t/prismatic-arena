@@ -65,6 +65,22 @@
   color: var(--text-dim);
   font-size: 0.92em;
 }
+/* In-game stat glyph (see components/StatIcon.tsx). Only layout lives here —
+   the atlas offsets are computed from lib/stat-icons.ts so the two cannot
+   disagree. Vertically nudged to sit on the text's optical centre rather than
+   its baseline. */
+.si {
+  display: inline-block;
+  vertical-align: -0.18em;
+  background-repeat: no-repeat;
+  flex: none;
+}
+/* Inside a sentence the glyph replaces a word, so it needs word spacing on both
+   sides; adjacent glyphs (Bastion's "Armor MR") still need separating. */
+.rt .si {
+  margin: 0 1px;
+}
+
 /* Scaling hint (what a value is / scales with) — muted so it reads as secondary
    even inside a coloured damage span. */
 .rt-scale {

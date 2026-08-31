@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from 'react';
 import type { LibraryData, LibUnit, LibTrait, LibItem, LibAugment, AugmentTier } from '@/server/library-data';
 import { RichText } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
+import { StatLabel } from './StatIcon';
 
 type Tab = 'units' | 'traits' | 'items' | 'augments';
 
@@ -368,7 +369,7 @@ export default function Library({ data }: { data: LibraryData }) {
                     <div className="istat-list">
                       {it.stats.map((s) => (
                         <span key={s.label} className="istat">
-                          <b>{s.value}</b> {s.label}
+                          <b>{s.value}</b> <StatLabel label={s.label} />
                         </span>
                       ))}
                     </div>
