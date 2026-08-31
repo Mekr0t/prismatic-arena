@@ -216,7 +216,7 @@ async function scanBoards(
       const identity = buildIdentity(sigUnits, emblems);
       if (!identity) continue; // < MIN_BOARD_UNITS real units → no comp_id
 
-      const key = `${p.set_number} ${identity.signature}`;
+      const key = `${p.set_number}\0${identity.signature}`;
       let idx = seedIdxByKey.get(key);
       if (idx === undefined) {
         idx = seeds.length;
@@ -279,11 +279,11 @@ async function upsertComps(client: PoolClient, seeds: CompSeed[]): Promise<numbe
         ),
       ],
     );
-    for (const row of res.rows) idByKey.set(`${row.set_number} ${row.signature}`, row.id);
+    for (const row of res.rows) idByKey.set(`${row.set_number}\0${row.signature}`, row.id);
   }
 
   for (let i = 0; i < seeds.length; i++) {
-    const id = idByKey.get(`${seeds[i].setNumber} ${seeds[i].signature}`);
+    const id = idByKey.get(`${seeds[i].setNumber}\0${seeds[i].signature}`);
     if (id === undefined) {
       throw new Error(`comp upsert returned no id for signature ${seeds[i].signature}`);
     }
