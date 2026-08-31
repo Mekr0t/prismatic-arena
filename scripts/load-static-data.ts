@@ -8,7 +8,7 @@ import { statIconKey } from '@/lib/stat-icons';
 import { keywordFor } from '@/lib/keywords';
 import { emblemGrantDescription, traitNameFromEmblem, EMBLEM_BONUSES } from '@/lib/emblems';
 import { lookupBinField } from '@/lib/bin-hash';
-import { traitValueIcons } from '@/server/set-config';
+import { traitValueIcons, traitDescriptionExtra } from '@/server/set-config';
 import type { StatIconKey } from '@/lib/stat-icons';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
@@ -276,7 +276,14 @@ function buildTraitContent(t: CDragonTrait, setNumber: number): { intro: string 
   }
 
   const introHtml = t.desc.split(/<(?:expandRow|row)>/i)[0] ?? '';
-  const intro = resolveDesc(introHtml, introEffMap);
+  const resolvedIntro = resolveDesc(introHtml, introEffMap);
+  // Content CDragon describes the mechanic for but never lists (Primal's four
+  // Blessings). Appended AFTER resolution so it is never scanned for @Var@
+  // placeholders it does not have.
+  const extra = traitDescriptionExtra(setNumber, t.apiName ?? '');
+  const intro = extra
+    ? [resolvedIntro, extra].filter(Boolean).join('\n\n')
+    : resolvedIntro;
 
   // One <row> per breakpoint (Meeple, Challenger) maps by index; a single
   // <expandRow> (Conduit) is a TEMPLATE repeated for every breakpoint, resolved

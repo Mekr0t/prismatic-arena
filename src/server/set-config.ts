@@ -96,6 +96,20 @@ export interface SetConfig {
    * → rows about Bonus Damage) wrong. A wrong icon reads as fact.
    */
   traitValueIcons: Readonly<Record<string, readonly (readonly StatIconKey[])[]>>;
+  /**
+   * Description text CDragon publishes for a trait's mechanic but not for its
+   * CONTENT.
+   *
+   * Set 18's Primal says only "Choose one of four Primal Blessings." and never
+   * names the four — its breakpoints carry no text either, and searching the
+   * whole catalog for the blessing wording ("Primal takedowns", "gain a
+   * component. Max") finds nothing. So the tooltip asked the reader to choose
+   * between options it did not show.
+   *
+   * Appended after the published description, separated by a blank line.
+   * TRANSCRIBED FROM THE CLIENT, never guessed — this renders as fact.
+   */
+  traitDescriptionExtra: Readonly<Record<string, string>>;
 }
 
 export interface InferredVariant {
@@ -169,6 +183,7 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
     // Riot reports the chosen trait directly.
     inferredVariants: [],
     traitValueIcons: {},
+    traitDescriptionExtra: {},
   },
 
   // ── Set 18 ─────────────────────────────────────────────────────────────────
@@ -208,6 +223,16 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
       DA_18_Fae: [['ad', 'ap']],
       // No gap in the row at all, so the pair goes to the end.
       DA_18_Defender: [['armor', 'mr']],
+    },
+    traitDescriptionExtra: {
+      // The four Blessings the trait invites you to choose between. Not
+      // published anywhere in the catalog; transcribed from the client.
+      DA_Primal18: [
+        'Primal damage executes enemies below 12% Health.',
+        'Every 15 Primal takedowns, gain a component. Max 4.',
+        'After 6 seconds, Primal champions gain 35% Attack Speed and your team gains 15% Attack Speed',
+        'Your team heals for 4% of their max Health every 4 seconds.',
+      ].join('\n'),
     },
   },
 };
@@ -293,6 +318,11 @@ export function traitContribution(setNumber: number, unitId: string, traitId: st
     if (m.traits === '*' || m.traits.includes(traitId)) return m.count;
   }
   return 1;
+}
+
+/** Text to append to a trait's description; empty string when it needs none. */
+export function traitDescriptionExtra(setNumber: number, traitId: string): string {
+  return config(setNumber)?.traitDescriptionExtra?.[traitId] ?? '';
 }
 
 /** Stat glyphs to inject into a trait's value rows; empty when it needs none. */

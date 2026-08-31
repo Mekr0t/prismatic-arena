@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STAT_ICONS } from '@/lib/stat-icons';
-import { isSetItem, itemIdPrefixes, traitContribution, traitValueIcons } from './set-config';
+import {
+  isSetItem, itemIdPrefixes, traitContribution, traitValueIcons, traitDescriptionExtra,
+} from './set-config';
 
 // The registry holds per-set knowledge that cannot be derived from CDragon.
 // Two things here are load-bearing enough to pin:
@@ -99,4 +101,29 @@ test('every configured icon key is a real one', () => {
       for (const k of group) assert.ok(k in STAT_ICONS, `${id}: ${k} is not a defined stat icon`);
     }
   }
+});
+
+test('Primal carries the four Blessings CDragon never lists', () => {
+  // Its published description is only "Choose one of four Primal Blessings.",
+  // and its breakpoints have no text — so the tooltip asked the reader to pick
+  // between options it did not show.
+  const extra = traitDescriptionExtra(18, 'DA_Primal18');
+  const lines = extra.split('\n').filter(Boolean);
+  assert.equal(lines.length, 4, 'four Blessings, one per line');
+  assert.match(lines[0], /executes enemies below 12% Health/);
+  assert.match(lines[1], /Every 15 Primal takedowns/);
+  assert.match(lines[2], /35% Attack Speed/);
+  assert.match(lines[3], /heals for 4%/);
+});
+
+test('the extra never repeats the description it is appended to', () => {
+  // It is joined onto the published text, so a copy of it would read twice —
+  // the bug that made Solar render its paragraph twice.
+  assert.doesNotMatch(traitDescriptionExtra(18, 'DA_Primal18'), /Choose one of four/i);
+});
+
+test('traits and sets with nothing extra get an empty string', () => {
+  assert.equal(traitDescriptionExtra(18, 'DA_18_Defender'), '');
+  assert.equal(traitDescriptionExtra(17, 'TFT17_AssassinTrait'), '');
+  assert.equal(traitDescriptionExtra(99, 'DA_Primal18'), '');
 });
