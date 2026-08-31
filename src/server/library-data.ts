@@ -2,6 +2,7 @@ import { query } from '@/lib/db';
 import { iconUrl } from '@/lib/icon-url';
 import type { Breakpoint } from '@/lib/planner/core';
 import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
+import { isSetItem } from './set-config';
 import { currentSet } from './static-data';
 
 export interface LibUnit {
@@ -136,7 +137,6 @@ export async function getLibraryData(): Promise<LibraryData> {
       })),
   }));
 
-  const setPrefix = `TFT${setNumber}_Item_`;
 
   // rank for preferring which version to keep when names collide
   const kindRank = { component: 0, craftable: 1, emblem: 2, artifact: 3, other: 4 } as const;
@@ -146,7 +146,7 @@ export async function getLibraryData(): Promise<LibraryData> {
   for (const r of itemRows) {
     const id = r.item_id;
     if (!id || !r.name) continue;
-    if (!id.startsWith('TFT_Item_') && !id.startsWith(setPrefix)) continue;
+    if (!isSetItem(setNumber, id)) continue;
     if (ITEM_JUNK.test(id)) continue;
     if (ITEM_NAME_JUNK.test(r.name)) continue;
 

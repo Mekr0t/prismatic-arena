@@ -114,6 +114,56 @@ test('an emblem on a unit that ALREADY has the trait does not double-count', () 
   assert.equal(find(redundant, 'Bastion').count, 2, 'still two distinct Bastions, not three');
 });
 
+test('a unit that counts twice contributes 2, not 1', () => {
+  // Set 18: Elder Dragon counts as two Riftbeasts, an Avatar Lux as two of the
+  // trait she chose. Verified against Riot's own participant_traits counts.
+  const units = new Map<string, PlannerUnit>([
+    ...UNITS,
+    ['Double', { ...unit('Double', ['Bastion']), traitCounts: { Bastion: 2 } }],
+  ]);
+  const board = place({ 0: at('Double') });
+  const t = computeActiveTraits(board, units, ITEMS, TRAITS).find((x) => x.id === 'Bastion')!;
+  assert.equal(t.count, 2, 'one unit, two Bastions');
+  assert.equal(t.style, 1, 'and that alone clears the 2-breakpoint');
+});
+
+test('a doubled unit placed twice still counts once (i.e. 2, not 4)', () => {
+  const units = new Map<string, PlannerUnit>([
+    ...UNITS,
+    ['Double', { ...unit('Double', ['Bastion']), traitCounts: { Bastion: 2 } }],
+  ]);
+  const board = place({ 0: at('Double'), 1: at('Double') });
+  assert.equal(
+    computeActiveTraits(board, units, ITEMS, TRAITS).find((x) => x.id === 'Bastion')!.count,
+    2,
+    'the duplicate-copy rule still applies to the multiplied contribution',
+  );
+});
+
+test('an emblem does not stack on a unit that already counts twice', () => {
+  // The emblem is wasted in game; before contributions were numeric a Set
+  // deduped this to the same answer, so this pins the behaviour deliberately.
+  const units = new Map<string, PlannerUnit>([
+    ...UNITS,
+    ['Double', { ...unit('Double', ['Bastion']), traitCounts: { Bastion: 2 } }],
+  ]);
+  const board = place({ 0: at('Double', ['BastionEmblem']) });
+  assert.equal(
+    computeActiveTraits(board, units, ITEMS, TRAITS).find((x) => x.id === 'Bastion')!.count,
+    2,
+    'max(innate 2, emblem 1) — not 3',
+  );
+});
+
+test('traitCounts only applies to the named trait', () => {
+  const units = new Map<string, PlannerUnit>([
+    ['Multi', { ...unit('Multi', ['Bastion', 'Unique']), traitCounts: { Bastion: 2 } }],
+  ]);
+  const out = computeActiveTraits(place({ 0: at('Multi') }), units, ITEMS, TRAITS);
+  assert.equal(out.find((t) => t.id === 'Bastion')!.count, 2);
+  assert.equal(out.find((t) => t.id === 'Unique')!.count, 1, 'the other trait is untouched');
+});
+
 test('a non-emblem item grants nothing', () => {
   const items = new Map<string, PlannerItem>([
     ['Sword', { id: 'Sword', name: 'Sword', iconUrl: null, kind: 'component' }],

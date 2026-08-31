@@ -38,6 +38,37 @@ export interface SetConfig {
    *  from headlining them as plannable builds. Ids are set-prefixed, so the
    *  runtime predicate unions all sets safely. */
   mechanicItemPatterns: readonly RegExp[];
+  /** Id prefixes for THIS set's own items, beyond the cross-set `TFT_Item_`
+   *  pool. The `items` table holds CDragon's whole global catalog under the
+   *  live set number, so a prefix is what separates "this set's items" from
+   *  every other set's — it is not cosmetic. Sets 1-17 all used `TFT{n}_Item_`;
+   *  set 18 ships as `DA_18_`, which is why this stopped being derivable and
+   *  became config. Empty falls back to `TFT{n}_Item_`. */
+  itemIdPrefixes: readonly string[];
+  /** Units that contribute MORE THAN ONE to a trait's unit count.
+   *
+   *  Not derivable from CDragon: the multiplier lives in the trait's prose, not
+   *  in any field. Set 18 has two cases, both verified against Riot's own
+   *  per-board `participant_traits` counts:
+   *    - Elder Dragon counts twice for Riftbeast (35/40 sampled boards showed
+   *      Riot's count at exactly naive+1).
+   *    - Avatar (Lux) counts twice for her CHOSEN trait — "An Avatar's chosen
+   *      Trait is counted twice", per the trait description.
+   *  `traits` lists the trait ids that multiply; `'*'` means every trait the
+   *  unit has EXCEPT those in `exceptTraits` (how Avatar is expressed, since
+   *  each Lux variant carries Avatar plus the one element she chose). */
+  traitMultipliers: readonly TraitMultiplier[];
+}
+
+export interface TraitMultiplier {
+  /** Matches character_id. A pattern, because variant families (the ten Lux
+   *  ids) share a rule but not a prefix — set 18 spells them both
+   *  `DA_18_Lux_*` and `DA_Lux18_*`. */
+  unit: RegExp;
+  traits: readonly string[] | '*';
+  exceptTraits?: readonly string[];
+  /** How many the unit counts as. 2 = "counts twice". */
+  count: number;
 }
 
 export const SET_CONFIGS: Record<number, SetConfig> = {
@@ -81,21 +112,33 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
     ],
     augmentGatedUnits: ['TFT17_Zed'], // Invader Zed — augment-only unit
     mechanicItemPatterns: [/AnimaSquadItem_Tier/i, /EkkoOffering_Anomaly/i],
+    itemIdPrefixes: ['TFT17_Item_'],
+    traitMultipliers: [], // set 17 has no unit that counts more than once
   },
 
-  // ── Set 18 (PBE ~2026-08) — fill from CDragon/patch notes when public. ──────
-  // Copy the shape above with TFT18_* ids. Leave arrays empty for mechanics the
-  // set doesn't have (empty = that feature no-ops for set-18 data; set 17 keeps
-  // its own block untouched). Verify every id against the loaded `units` /
-  // `items` tables — display names lie, apiNames don't.
-  //
-  // 18: {
-  //   setNumber: 18,
-  //   heroAugmentChampions: [],
-  //   damageItems: [],
-  //   augmentGatedUnits: [],
-  //   mechanicItemPatterns: [],
-  // },
+  // ── Set 18 ─────────────────────────────────────────────────────────────────
+  // Ids verified against the loaded `units` / `items` tables, not display names.
+  // heroAugment / damage / gated classification is still unfilled: those need
+  // patch-note reading and a meaningful sample, and an empty array no-ops
+  // cleanly rather than guessing wrong.
+  18: {
+    setNumber: 18,
+    heroAugmentChampions: [],
+    damageItems: [],
+    augmentGatedUnits: [],
+    mechanicItemPatterns: [],
+    // Set 18 breaks the TFT{n}_ convention: its own items ship as DA_18_*
+    // (DA_18_EmblemCoven, …). 156 emblem rows were invisible to the library and
+    // the planner until this was configurable.
+    itemIdPrefixes: ['DA_18_', 'TFT18_Item_'],
+    traitMultipliers: [
+      { unit: /^DA_18_ElderDragon$/, traits: ['DA_Riftbeast18'], count: 2 },
+      // Every Lux variant is Avatar + the one trait she chose; the chosen trait
+      // is the one that doubles, so match on '*' minus Avatar itself. Base Lux
+      // (DA_Lux18_Base) carries only Avatar and correctly doubles nothing.
+      { unit: /^DA_(18_Lux_|Lux18_)/, traits: '*', exceptTraits: ['DA_18_LuxUniqueTrait'], count: 2 },
+    ],
+  },
 };
 
 // ── Accessors (memoized Sets; warn once per unknown set) ─────────────────────
@@ -152,6 +195,33 @@ export function augmentGatedUnits(setNumber: number): ReadonlySet<string> {
     }
     return s;
   });
+}
+
+/** Id prefixes marking an item as belonging to `setNumber`, beyond the
+ *  cross-set `TFT_Item_` pool. Falls back to the pre-set-18 convention so an
+ *  unconfigured set behaves exactly as it did before this existed. */
+export function itemIdPrefixes(setNumber: number): readonly string[] {
+  const cfg = config(setNumber);
+  const prefixes = cfg?.itemIdPrefixes ?? [];
+  return prefixes.length ? prefixes : [`TFT${setNumber}_Item_`];
+}
+
+/** True when `itemId` belongs to this set (or the cross-set item pool). */
+export function isSetItem(setNumber: number, itemId: string): boolean {
+  if (itemId.startsWith('TFT_Item_')) return true;
+  return itemIdPrefixes(setNumber).some((p) => itemId.startsWith(p));
+}
+
+/** How many `unit` counts as toward `trait`. 1 unless the set says otherwise. */
+export function traitContribution(setNumber: number, unitId: string, traitId: string): number {
+  const cfg = config(setNumber);
+  if (!cfg) return 1;
+  for (const m of cfg.traitMultipliers) {
+    if (!m.unit.test(unitId)) continue;
+    if (m.exceptTraits?.includes(traitId)) continue;
+    if (m.traits === '*' || m.traits.includes(traitId)) return m.count;
+  }
+  return 1;
 }
 
 /** Set-mechanic special item? Union across all configured sets — item ids are

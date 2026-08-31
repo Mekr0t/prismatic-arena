@@ -7,6 +7,11 @@ export interface PlannerUnit {
   traits: string[]; // trait ids (apiNames)
   iconUrl: string | null;
   plannerCode: number | null; // Riot team-planner slot code, used for official export
+  /** How many this unit counts as toward a given trait, when that is not 1
+   *  (set 18: Elder Dragon counts 2 Riftbeast; a Lux variant counts 2 of the
+   *  trait she chose). Resolved server-side from set-config so this module
+   *  stays pure and the client never needs the registry. Absent = all 1. */
+  traitCounts?: Record<string, number>;
 }
 
 export interface Breakpoint {
@@ -57,38 +62,46 @@ export function emptyBoard(): Cell[] {
   return Array.from({ length: BOARD_SIZE }, () => null);
 }
 
-/** Count unique units per trait (innate + emblem grants) and resolve the active tier. */
+/** Count units per trait (innate + emblem grants) and resolve the active tier.
+ *
+ *  Contributions are tracked PER UNIT rather than as a flat tally, because the
+ *  same unit placed twice must still count once — while a unit that counts as
+ *  two of a trait (PlannerUnit.traitCounts) must count as two. Taking the max
+ *  of the innate and emblem contribution is what keeps an emblem from stacking
+ *  on a unit that already has the trait: in game that emblem is wasted, and
+ *  before this it was silently free because a Set deduped it. */
 export function computeActiveTraits(
   board: Cell[],
   unitsById: Map<string, PlannerUnit>,
   itemsById: Map<string, PlannerItem>,
   traits: PlannerTrait[],
 ): ActiveTrait[] {
-  const traitUnits = new Map<string, Set<string>>();
-  const add = (traitId: string, unitId: string) => {
-    let s = traitUnits.get(traitId);
-    if (!s) {
-      s = new Set();
-      traitUnits.set(traitId, s);
+  const traitUnits = new Map<string, Map<string, number>>();
+  const add = (traitId: string, unitId: string, contribution: number) => {
+    let m = traitUnits.get(traitId);
+    if (!m) {
+      m = new Map();
+      traitUnits.set(traitId, m);
     }
-    s.add(unitId);
+    m.set(unitId, Math.max(m.get(unitId) ?? 0, contribution));
   };
 
   for (const cell of board) {
     if (!cell) continue;
     const u = unitsById.get(cell.unitId);
-    if (u) for (const t of u.traits) add(t, cell.unitId);
+    if (u) for (const t of u.traits) add(t, cell.unitId, u.traitCounts?.[t] ?? 1);
     for (const itemId of cell.items) {
       const it = itemsById.get(itemId);
-      if (it?.kind === 'emblem' && it.trait) add(it.trait, cell.unitId);
+      if (it?.kind === 'emblem' && it.trait) add(it.trait, cell.unitId, 1);
     }
   }
 
   const byId = new Map(traits.map((t) => [t.id, t]));
   const result: ActiveTrait[] = [];
-  for (const [traitId, set] of traitUnits) {
+  for (const [traitId, contributions] of traitUnits) {
     const def = byId.get(traitId);
-    const count = set.size;
+    let count = 0;
+    for (const c of contributions.values()) count += c;
     let style = 0;
     let nextAt: number | null = null;
     if (def && def.breakpoints.length) {
