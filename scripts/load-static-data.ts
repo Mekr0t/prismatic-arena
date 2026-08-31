@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
 import { statIconKey } from '@/lib/stat-icons';
 import { keywordFor } from '@/lib/keywords';
-import { emblemGrantDescription } from '@/lib/emblems';
+import { emblemGrantDescription, traitNameFromEmblem, EMBLEM_BONUSES } from '@/lib/emblems';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -567,12 +567,20 @@ async function main(): Promise<void> {
       traits.map((t) => (t.name ?? '').trim().toLowerCase()).filter(Boolean),
     );
     let emblemsFilledIn = 0;
+    // Every emblem key this set actually has, so a mistyped EMBLEM_BONUSES key
+    // can be reported. An unrecognised key is otherwise SILENT — it simply never
+    // matches, and the emblem quietly renders with the grant line alone, which
+    // is exactly how "spirkin" and "ravanger" sat there doing nothing.
+    const emblemKeysInSet = new Set<string>();
 
     for (const it of items) {
       const stats = itemStats(it.effects);
       // CDragon's own text always wins; the fallback only fills a hole. That
       // way the day Riot publishes set-18 emblem descriptions, they take over
       // with no code change and nothing to remove.
+      const emblemKey = traitNameFromEmblem(it.name)?.toLowerCase();
+      if (emblemKey && liveTraitNames.has(emblemKey)) emblemKeysInSet.add(emblemKey);
+
       let description = resolveDesc(it.desc, it.effects);
       if (!description) {
         const fallback = emblemGrantDescription(it.name, liveTraitNames);
@@ -592,6 +600,17 @@ async function main(): Promise<void> {
           setNumber, it.apiName, it.name, it.icon ?? null, it.composition ?? [],
           description, JSON.stringify(stats),
         ],
+      );
+    }
+    const strayBonuses = Object.keys(EMBLEM_BONUSES).filter((k) => !emblemKeysInSet.has(k));
+    if (strayBonuses.length) {
+      console.warn(
+        `[data:load] ${strayBonuses.length} EMBLEM_BONUSES key(s) match no emblem in set ` +
+          `${setNumber} and had no effect: ${strayBonuses.join(', ')}
+` +
+          `  Check the spelling against the trait's DISPLAY name — the key is that ` +
+          `name lowercased (e.g. "Ravager Emblem" -> ravager, even though its id ` +
+          `says Slayer).`,
       );
     }
     if (emblemsFilledIn) {

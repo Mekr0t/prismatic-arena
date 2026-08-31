@@ -38,10 +38,11 @@ test('the grant line matches the wording every other set uses', () => {
 
 test('the grant follows the NAME, not the id', () => {
   // DA_18_EmblemSlayer is "Ravager Emblem". Ravager is the right answer; an
-  // id-based rule would have said Slayer.
-  assert.equal(
-    emblemGrantDescription('Ravager Emblem', SET18),
-    'The holder gains the Ravager trait.',
+  // id-based rule would have said Slayer. Matched as a prefix because Ravager
+  // also carries a transcribed bonus.
+  assert.match(
+    emblemGrantDescription('Ravager Emblem', SET18)!,
+    /^The holder gains the Ravager trait\./,
   );
 });
 
