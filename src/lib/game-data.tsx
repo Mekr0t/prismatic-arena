@@ -465,6 +465,8 @@ function ItemPopup({ item }: { item: LibItem }) {
         </div>
       </div>
 
+      <ItemRecipe recipe={item.recipe} />
+
       {item.stats.length > 0 && <ItemStats stats={item.stats} />}
 
       {item.description && (
@@ -473,6 +475,24 @@ function ItemPopup({ item }: { item: LibItem }) {
         </div>
       )}
     </>
+  );
+}
+
+// "= B.F. Sword + Sparring Gloves", with the component icons. Rendered from
+// the `composition` CDragon has always shipped and the Library only ever used
+// to CLASSIFY an item as craftable — the recipe itself was never shown.
+export function ItemRecipe({ recipe }: { recipe: LibItem['recipe'] }) {
+  if (recipe.length !== 2) return null;
+  return (
+    <div className="irecipe">
+      {recipe.map((p, i) => (
+        <span key={`${p.id}-${i}`} className="irecipe-part">
+          {i > 0 && <span className="irecipe-plus">+</span>}
+          {p.iconUrl && <img src={p.iconUrl} alt="" className="irecipe-icon" />}
+          <span className="irecipe-name">{p.name}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 

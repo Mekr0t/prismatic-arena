@@ -338,3 +338,30 @@
   .lib-layout.has-detail { grid-template-columns: 1fr; }
   .lib-detail            { position: static; max-height: none; }
 }
+
+/* Crafting recipe — "= B.F. Sword + Sparring Gloves". Reads as provenance, so
+   it sits above the stats and stays quieter than them. */
+.irecipe {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.irecipe-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.irecipe-plus {
+  margin-right: 2px;
+  opacity: 0.6;
+}
+.irecipe-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  flex: none;
+}

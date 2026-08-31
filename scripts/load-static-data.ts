@@ -632,8 +632,9 @@ async function main(): Promise<void> {
     if (emblemsFilledIn) {
       console.log(
         `[data:load] ${emblemsFilledIn} emblem(s) had no published description; ` +
-          `filled in the trait grant. The per-emblem bonus line is not published ` +
-          `for this set and is deliberately not guessed.`,
+          `filled in the trait grant, plus a transcribed bonus where one is known ` +
+          `(src/lib/emblems.ts). Bonuses are never guessed — an emblem with no ` +
+          `entry gets the grant line alone.`,
       );
     }
 

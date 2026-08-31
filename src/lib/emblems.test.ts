@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { traitNameFromEmblem, emblemGrantDescription } from './emblems';
+import { traitNameFromEmblem, emblemGrantDescription, EMBLEM_BONUSES } from './emblems';
 
 // The rule is "read the trait off the DISPLAY name", and set 18 is the reason:
 // DA_18_EmblemSlayer is named "Ravager Emblem" and grants Ravager, so anything
@@ -28,9 +28,11 @@ test('an item that is not an emblem yields nothing', () => {
 });
 
 test('the grant line matches the wording every other set uses', () => {
+  // Blossom rather than Invoker: Invoker has a transcribed bonus appended, and
+  // this test is about the grant line's wording on its own.
   assert.equal(
-    emblemGrantDescription('Invoker Emblem', SET18),
-    'The holder gains the Invoker trait.',
+    emblemGrantDescription('Blossom Emblem', SET18),
+    'The holder gains the Blossom trait.',
   );
 });
 
@@ -56,9 +58,37 @@ test('a non-emblem item never gets a grant line', () => {
 });
 
 test('trait matching ignores case', () => {
-  assert.equal(
-    emblemGrantDescription('INVOKER Emblem', SET18),
-    'The holder gains the INVOKER trait.',
+  const out = emblemGrantDescription('INVOKER Emblem', SET18)!;
+  assert.match(
+    out,
+    /^The holder gains the INVOKER trait\./,
     'the sentence keeps the name as written, but the lookup is case-insensitive',
   );
+});
+
+test('a transcribed bonus is appended after the grant line', () => {
+  const out = emblemGrantDescription('Invoker Emblem', SET18)!;
+  const [grant, blank, bonus] = out.split('\n');
+  assert.equal(grant, 'The holder gains the Invoker trait.');
+  assert.equal(blank, '', 'blank line between them, as the game separates them');
+  assert.equal(bonus, EMBLEM_BONUSES.invoker);
+});
+
+test('an emblem with no transcribed bonus gets the grant line alone', () => {
+  // Half the set's emblems genuinely have no extra effect. That is an answer,
+  // not a gap, and must not read as a truncated sentence.
+  assert.equal(EMBLEM_BONUSES.blossom, undefined, 'fixture assumption');
+  assert.equal(
+    emblemGrantDescription('Blossom Emblem', SET18),
+    'The holder gains the Blossom trait.',
+  );
+});
+
+test('every bonus is keyed by a lowercase trait name and reads as a sentence', () => {
+  for (const [key, text] of Object.entries(EMBLEM_BONUSES)) {
+    assert.equal(key, key.toLowerCase(), `${key}: keys are lowercased for lookup`);
+    assert.ok(text.trim().length > 10, `${key}: too short to be a real effect`);
+    assert.match(text.trim(), /[.!]$/, `${key}: should end as a sentence`);
+    assert.doesNotMatch(text, /holder gains the/i, `${key}: duplicates the grant line`);
+  }
 });

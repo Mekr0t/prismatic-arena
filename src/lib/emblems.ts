@@ -20,6 +20,37 @@ export function traitNameFromEmblem(itemName: string | null | undefined): string
 }
 
 /**
+ * Per-emblem bonus effects, transcribed by hand.
+ *
+ * Set 18's emblems publish NOTHING — `desc: null`, `effects: {}`, no
+ * `associatedTraits` — so unlike the trait-grant line above, the bonus cannot be
+ * derived from anything. It is not in the emblem entry, the trait description,
+ * or anywhere else in the catalog; it was searched for.
+ *
+ * Keyed by the trait's DISPLAY name, lowercased. Only ~half the emblems have a
+ * bonus at all; an absent key simply means the emblem grants its trait and
+ * nothing more, which is a real answer rather than a gap.
+ *
+ * TRANSCRIBE, DO NOT GUESS. An entry here is shown to users as fact, so it
+ * should be copied from the in-game tooltip verbatim. Anything uncertain is
+ * better left out — the grant line alone is honest, a wrong effect is not.
+ *
+ * TEMPORARY, like the set-18 trait bridge before it: CDragon caught up on
+ * champions within days of launch, and `emblemGrantDescription` already prefers
+ * published text over anything here. When Riot publishes emblem descriptions,
+ * these entries stop being reached and can be deleted.
+ *
+ * Remaining set-18 emblems, for whoever fills these in — uncomment and complete
+ * the ones that have an effect, delete the rest:
+ *   blackthorn, blossom, brawler, coven, defender, elderwood, executioner,
+ *   fae, flora fatalis, hunter, inferno, juggernaut, lunar, primal, rapidfire,
+ *   ravager, spellweaver, sprykin, vanguard
+ */
+export const EMBLEM_BONUSES: Record<string, string> = {
+  invoker: 'On cast, gain Ability Power equal to 10% of Mana spent.',
+};
+
+/**
  * The opening line every set's emblem description uses, for an emblem CDragon
  * has published no text for.
  *
@@ -31,9 +62,8 @@ export function traitNameFromEmblem(itemName: string | null | undefined): string
  * `liveTraitNames` gates it: an emblem whose name matches no trait in the set
  * being loaded returns null, so this can never invent a grant.
  *
- * It deliberately stops there. The per-emblem BONUS line — Invoker's "On cast,
- * gain Ability Power equal to 10% of Mana spent" — is not published anywhere
- * for set 18, and a guessed effect shown as fact is worse than a short entry.
+ * A hand-transcribed bonus from EMBLEM_BONUSES is appended when one exists.
+ * Nothing is invented: an emblem with no entry gets the grant line alone.
  */
 export function emblemGrantDescription(
   itemName: string | null | undefined,
@@ -41,6 +71,11 @@ export function emblemGrantDescription(
 ): string | null {
   const traitName = traitNameFromEmblem(itemName);
   if (!traitName) return null;
-  if (!liveTraitNames.has(traitName.toLowerCase())) return null;
-  return `The holder gains the ${traitName} trait.`;
+  const key = traitName.toLowerCase();
+  if (!liveTraitNames.has(key)) return null;
+  const grant = `The holder gains the ${traitName} trait.`;
+  const bonus = EMBLEM_BONUSES[key];
+  // Blank line between the grant and the bonus, matching how the game separates
+  // them and how the Precision glossary already reads.
+  return bonus ? `${grant}\n\n${bonus}` : grant;
 }

@@ -5,6 +5,7 @@ import type { LibraryData, LibUnit, LibTrait, LibItem, LibAugment, AugmentTier }
 import { RichText } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
 import { StatLabel } from './StatIcon';
+import { ItemRecipe } from '@/lib/game-data';
 
 type Tab = 'units' | 'traits' | 'items' | 'augments';
 
@@ -365,6 +366,7 @@ export default function Library({ data }: { data: LibraryData }) {
                       <span className={`lib-kind-badge kind-${it.kind}`}>{it.kind}</span>
                     </div>
                   </div>
+                  <ItemRecipe recipe={it.recipe} />
                   {it.stats.length > 0 && (
                     <div className="istat-list">
                       {it.stats.map((s) => (
