@@ -70,9 +70,11 @@ test('an unconfigured set never multiplies', () => {
 test('traits whose rows publish a bare number get their stat glyphs', () => {
   // Defender's row is literally "(@MinUnits@) @DefenderDefenseGain@" — the game
   // draws the icons itself, so read alone the row is just "25".
-  assert.deepEqual(traitValueIcons(18, 'DA_18_Defender'), ['armor', 'mr']);
-  // Adaptor's order matters: the AD glyph fills the gap before "OR", AP follows.
-  assert.deepEqual(traitValueIcons(18, 'DA_18_Adaptor'), ['ad', 'ap']);
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Defender'), [['armor', 'mr']]);
+  // Placement differs per trait, which is why these are GROUPS per slot.
+  // Adaptor splits around "OR"; Fae keeps both together mid-sentence.
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Adaptor'), [['ad'], ['ap']]);
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Fae'), [['ad', 'ap']]);
 });
 
 test('traits that name their own stats are left alone', () => {
@@ -80,8 +82,8 @@ test('traits that name their own stats are left alone', () => {
   // intro says Omnivamp while its rows are about Bonus Damage, and Fae's names
   // three stats for a two-value row. Both must stay empty.
   assert.deepEqual(traitValueIcons(18, 'DA_18_Slayer'), [], 'Ravager');
-  assert.deepEqual(traitValueIcons(18, 'DA_18_Fae'), []);
   assert.deepEqual(traitValueIcons(18, 'DA_18_Solar'), [], 'already carries explicit icons');
+  assert.deepEqual(traitValueIcons(18, 'DA_Riftbeast18'), [], 'already carries explicit icons');
 });
 
 test('an unconfigured trait or set injects nothing', () => {
@@ -91,9 +93,10 @@ test('an unconfigured trait or set injects nothing', () => {
 });
 
 test('every configured icon key is a real one', () => {
-  for (const id of ['DA_18_Defender', 'DA_18_Adaptor']) {
-    for (const k of traitValueIcons(18, id)) {
-      assert.ok(k in STAT_ICONS, `${id}: ${k} is not a defined stat icon`);
+  for (const id of ['DA_18_Defender', 'DA_18_Adaptor', 'DA_18_Fae']) {
+    for (const group of traitValueIcons(18, id)) {
+      assert.ok(group.length > 0, `${id}: an empty group would consume a slot for nothing`);
+      for (const k of group) assert.ok(k in STAT_ICONS, `${id}: ${k} is not a defined stat icon`);
     }
   }
 });

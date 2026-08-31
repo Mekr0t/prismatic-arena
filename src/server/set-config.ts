@@ -82,16 +82,20 @@ export interface SetConfig {
    * `(@MinUnits@) @DefenderDefenseGain@` — because the game draws the stat icon
    * itself from the trait's type. Read alone, "25" says nothing.
    *
-   * Keyed by trait apiName; icons fill the gaps CDragon leaves (a run of two or
-   * more spaces, which is where the client puts one) in order, and any left
-   * over go at the end. Adaptor's `@ADAPGain*100@%  OR` therefore becomes
-   * "25% [AD] OR [AP]", matching the client.
+   * One GROUP per slot, where the slots are the gaps CDragon leaves (a run of
+   * two or more spaces, which is where the client draws an icon) in order,
+   * followed by the end of the row. Grouping is needed because placement really
+   * does differ per trait:
+   *
+   *   Adaptor  "@ADAPGain*100@%  OR"        [['ad'], ['ap']]  -> "25% [AD] OR [AP]"
+   *   Fae      "@ADAP@%  and @Heal@% Heal." [['ad','ap']]     -> "5% [AD][AP] and 2% Heal."
+   *   Defender "@DefenderDefenseGain@"      [['armor','mr']]  -> "25 [Armor][MR]"  (no gap, so end)
    *
    * CURATED, NOT INFERRED, and the difference matters: inferring the stats from
    * the trait's intro prose was measured and gets Ravager ("gain 10% Omnivamp"
-   * → rows about Bonus Damage) and Fae wrong. A wrong icon reads as fact.
+   * → rows about Bonus Damage) wrong. A wrong icon reads as fact.
    */
-  traitValueIcons: Readonly<Record<string, readonly StatIconKey[]>>;
+  traitValueIcons: Readonly<Record<string, readonly (readonly StatIconKey[])[]>>;
 }
 
 export interface InferredVariant {
@@ -198,10 +202,12 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
       },
     ],
     traitValueIcons: {
-      // "25% [AD] OR [AP]" — the gap in CDragon's "…%  OR" takes the first.
-      DA_18_Adaptor: ['ad', 'ap'],
-      // "25 [Armor] [MR]" — a bare number otherwise.
-      DA_18_Defender: ['armor', 'mr'],
+      // Split around the "OR": AD fills the gap, AP lands at the end.
+      DA_18_Adaptor: [['ad'], ['ap']],
+      // Both together in the gap — the row continues "and 2% Heal." after them.
+      DA_18_Fae: [['ad', 'ap']],
+      // No gap in the row at all, so the pair goes to the end.
+      DA_18_Defender: [['armor', 'mr']],
     },
   },
 };
@@ -290,7 +296,10 @@ export function traitContribution(setNumber: number, unitId: string, traitId: st
 }
 
 /** Stat glyphs to inject into a trait's value rows; empty when it needs none. */
-export function traitValueIcons(setNumber: number, traitId: string): readonly StatIconKey[] {
+export function traitValueIcons(
+  setNumber: number,
+  traitId: string,
+): readonly (readonly StatIconKey[])[] {
   return config(setNumber)?.traitValueIcons?.[traitId] ?? [];
 }
 

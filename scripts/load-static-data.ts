@@ -247,11 +247,12 @@ function pickCurrentSet(
  * signal: CDragon leaves a double space where the client draws an icon
  * ("@ADAPGain*100@%  OR"). Fill the gaps in order, append whatever is left.
  */
-function injectValueIcons(rowHtml: string, icons: readonly StatIconKey[]): string {
-  if (!icons.length) return rowHtml;
+function injectValueIcons(rowHtml: string, groups: readonly (readonly StatIconKey[])[]): string {
+  if (!groups.length) return rowHtml;
+  const render = (g: readonly StatIconKey[]) => g.map((k) => `«icon:${k}»`).join('');
   let i = 0;
-  let out = rowHtml.replace(/ {2,}/g, () => (i < icons.length ? ` «icon:${icons[i++]}» ` : ' '));
-  while (i < icons.length) out += ` «icon:${icons[i++]}»`;
+  let out = rowHtml.replace(/ {2,}/g, () => (i < groups.length ? ` ${render(groups[i++])} ` : ' '));
+  while (i < groups.length) out += ` ${render(groups[i++])}`;
   return out;
 }
 
