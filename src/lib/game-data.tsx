@@ -478,9 +478,13 @@ function ItemPopup({ item }: { item: LibItem }) {
   );
 }
 
-// "= B.F. Sword + Sparring Gloves", with the component icons. Rendered from
-// the `composition` CDragon has always shipped and the Library only ever used
-// to CLASSIFY an item as craftable — the recipe itself was never shown.
+// The two components an item builds from, as icons. Rendered from the
+// `composition` CDragon has always shipped and the Library only ever used to
+// CLASSIFY an item as craftable — the recipe itself was never shown.
+//
+// Icons alone: the components are a small, memorised set, and the names were
+// wider than the recipe was worth. The name survives as alt/title, so it is
+// still the accessible name and still available on hover.
 export function ItemRecipe({ recipe }: { recipe: LibItem['recipe'] }) {
   if (recipe.length !== 2) return null;
   return (
@@ -488,8 +492,12 @@ export function ItemRecipe({ recipe }: { recipe: LibItem['recipe'] }) {
       {recipe.map((p, i) => (
         <span key={`${p.id}-${i}`} className="irecipe-part">
           {i > 0 && <span className="irecipe-plus">+</span>}
-          {p.iconUrl && <img src={p.iconUrl} alt="" className="irecipe-icon" />}
-          <span className="irecipe-name">{p.name}</span>
+          {p.iconUrl ? (
+            <img src={p.iconUrl} alt={p.name} title={p.name} className="irecipe-icon" />
+          ) : (
+            // No icon shipped — fall back to the name rather than an empty slot.
+            <span className="irecipe-name">{p.name}</span>
+          )}
         </span>
       ))}
     </div>

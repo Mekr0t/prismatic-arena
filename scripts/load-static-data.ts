@@ -278,41 +278,6 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
   return { intro, rowTexts };
 }
 
-// Breakpoint metadata fields — not variable values.
-const TRAIT_META = new Set(['minUnits', 'maxUnits', 'style', 'min', 'max']);
-
-// Builds a per-variable range string from all breakpoint levels, e.g. { Damage: "15/25/40" }.
-function buildTraitEffectsMap(effects: CDragonTraitEffect[]): Record<string, string> {
-  const byVar = new Map<string, number[]>();
-
-  for (const e of effects) {
-    // Expose MinUnits/MaxUnits so @MinUnits@ resolves in desc
-    if (typeof e.minUnits === 'number') {
-      const arr = byVar.get('MinUnits') ?? [];
-      arr.push(e.minUnits);
-      byVar.set('MinUnits', arr);
-    }
-
-    // Values nested under variables
-    const vars = e.variables ?? {};
-    for (const [k, v] of Object.entries(vars)) {
-      if (typeof v !== 'number') continue;
-      const arr = byVar.get(k) ?? [];
-      arr.push(v);
-      byVar.set(k, arr);
-    }
-  }
-
-  const out: Record<string, string> = {};
-  for (const [k, vals] of byVar) {
-    const unique = [...new Set(vals)];
-    out[k] = unique
-      .map((v) => (v === Math.floor(v) ? String(Math.floor(v)) : v.toFixed(1)))
-      .join('/');
-  }
-  return out;
-}
-
 // Builds effects map from champion ability variables.
 // value array: [base, 1★, 2★, 3★, 4★, ...] — use indices 1-3 for the three star levels.
 // Converts ability variables array → { VarName: "145/190/285" } for 1★/2★/3★
