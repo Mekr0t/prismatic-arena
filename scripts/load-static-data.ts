@@ -8,6 +8,8 @@ import { statIconKey } from '@/lib/stat-icons';
 import { keywordFor } from '@/lib/keywords';
 import { emblemGrantDescription, traitNameFromEmblem, EMBLEM_BONUSES } from '@/lib/emblems';
 import { lookupBinField } from '@/lib/bin-hash';
+import { traitValueIcons } from '@/server/set-config';
+import type { StatIconKey } from '@/lib/stat-icons';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -237,7 +239,23 @@ function pickCurrentSet(
 // can show each breakpoint's actual effect beside its badge instead of a bare
 // unit count. Rows appear as <row> or <expandRow>; each resolves against its own
 // breakpoint variables.
-function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (string | null)[] } {
+/**
+ * Put a trait's stat glyphs into a value row that does not name its stat.
+ *
+ * Injected into the RAW row before `resolveDesc` runs, because resolveDesc
+ * collapses runs of whitespace — and those runs are precisely the positional
+ * signal: CDragon leaves a double space where the client draws an icon
+ * ("@ADAPGain*100@%  OR"). Fill the gaps in order, append whatever is left.
+ */
+function injectValueIcons(rowHtml: string, icons: readonly StatIconKey[]): string {
+  if (!icons.length) return rowHtml;
+  let i = 0;
+  let out = rowHtml.replace(/ {2,}/g, () => (i < icons.length ? ` «icon:${icons[i++]}» ` : ' '));
+  while (i < icons.length) out += ` «icon:${icons[i++]}»`;
+  return out;
+}
+
+function buildTraitContent(t: CDragonTrait, setNumber: number): { intro: string | null; rowTexts: (string | null)[] } {
   if (!t.desc) return { intro: null, rowTexts: [] };
   const effects = t.effects ?? [];
 
@@ -264,8 +282,9 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
   // with each breakpoint's own variables. Build one effect string per breakpoint.
   const template = rows.length === 1 && effects.length > 1 ? rows[0] : null;
   const rowTexts = effects.map((e, i) => {
-    const rowHtml = template ?? rows[i];
-    if (rowHtml == null) return null;
+    const rawRow = template ?? rows[i];
+    if (rawRow == null) return null;
+    const rowHtml = injectValueIcons(rawRow, traitValueIcons(setNumber, t.apiName ?? ''));
     const effMap: Record<string, number> = {};
     if (typeof e.minUnits === 'number') effMap.MinUnits = e.minUnits;
     const vars = e.variables ?? {};
@@ -539,7 +558,7 @@ async function main(): Promise<void> {
 
     for (const t of traits) {
       if (!t.apiName || !t.name) continue;
-      const { intro, rowTexts } = buildTraitContent(t);
+      const { intro, rowTexts } = buildTraitContent(t, setNumber);
       const breakpoints = (t.effects ?? []).map((e, i) => ({
         minUnits: e.minUnits ?? e.min ?? null,
         maxUnits: e.maxUnits ?? e.max ?? null,

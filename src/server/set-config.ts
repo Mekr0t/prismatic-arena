@@ -19,6 +19,8 @@
 // several items are thematic renames per set (set 17: Void Staff plays as
 // TFT_Item_StatikkShiv, Kraken's Fury as TFT_Item_RunaansHurricane).
 
+import type { StatIconKey } from '@/lib/stat-icons';
+
 export interface SetConfig {
   setNumber: number;
   /** Champs that can take a hero augment (turns a support/tank into a second
@@ -73,6 +75,23 @@ export interface SetConfig {
    *  breakpoints alone, so splitting comps on it would fragment the data for a
    *  distinction players do not plan around. */
   inferredVariants: readonly InferredVariant[];
+  /**
+   * Stat glyphs for trait VALUE rows whose text does not name the stat.
+   *
+   * Some traits publish a bare number — Defender's row is literally
+   * `(@MinUnits@) @DefenderDefenseGain@` — because the game draws the stat icon
+   * itself from the trait's type. Read alone, "25" says nothing.
+   *
+   * Keyed by trait apiName; icons fill the gaps CDragon leaves (a run of two or
+   * more spaces, which is where the client puts one) in order, and any left
+   * over go at the end. Adaptor's `@ADAPGain*100@%  OR` therefore becomes
+   * "25% [AD] OR [AP]", matching the client.
+   *
+   * CURATED, NOT INFERRED, and the difference matters: inferring the stats from
+   * the trait's intro prose was measured and gets Ravager ("gain 10% Omnivamp"
+   * → rows about Bonus Damage) and Fae wrong. A wrong icon reads as fact.
+   */
+  traitValueIcons: Readonly<Record<string, readonly StatIconKey[]>>;
 }
 
 export interface InferredVariant {
@@ -145,6 +164,7 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
     // Set 17's equivalent (Miss Fortune's Choose Trait) needs no inference —
     // Riot reports the chosen trait directly.
     inferredVariants: [],
+    traitValueIcons: {},
   },
 
   // ── Set 18 ─────────────────────────────────────────────────────────────────
@@ -177,6 +197,12 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
         minDelta: 2,
       },
     ],
+    traitValueIcons: {
+      // "25% [AD] OR [AP]" — the gap in CDragon's "…%  OR" takes the first.
+      DA_18_Adaptor: ['ad', 'ap'],
+      // "25 [Armor] [MR]" — a bare number otherwise.
+      DA_18_Defender: ['armor', 'mr'],
+    },
   },
 };
 
@@ -261,6 +287,11 @@ export function traitContribution(setNumber: number, unitId: string, traitId: st
     if (m.traits === '*' || m.traits.includes(traitId)) return m.count;
   }
   return 1;
+}
+
+/** Stat glyphs to inject into a trait's value rows; empty when it needs none. */
+export function traitValueIcons(setNumber: number, traitId: string): readonly StatIconKey[] {
+  return config(setNumber)?.traitValueIcons?.[traitId] ?? [];
 }
 
 /** Families whose displayed variant must be inferred; empty for most sets. */

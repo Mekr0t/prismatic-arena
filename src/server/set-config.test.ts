@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isSetItem, itemIdPrefixes, traitContribution } from './set-config';
+import { STAT_ICONS } from '@/lib/stat-icons';
+import { isSetItem, itemIdPrefixes, traitContribution, traitValueIcons } from './set-config';
 
 // The registry holds per-set knowledge that cannot be derived from CDragon.
 // Two things here are load-bearing enough to pin:
@@ -64,4 +65,35 @@ test('an ordinary unit counts once, and set 17 has no multipliers at all', () =>
 
 test('an unconfigured set never multiplies', () => {
   assert.equal(traitContribution(99, 'DA_18_ElderDragon', 'DA_Riftbeast18'), 1);
+});
+
+test('traits whose rows publish a bare number get their stat glyphs', () => {
+  // Defender's row is literally "(@MinUnits@) @DefenderDefenseGain@" — the game
+  // draws the icons itself, so read alone the row is just "25".
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Defender'), ['armor', 'mr']);
+  // Adaptor's order matters: the AD glyph fills the gap before "OR", AP follows.
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Adaptor'), ['ad', 'ap']);
+});
+
+test('traits that name their own stats are left alone', () => {
+  // Inferring from intro prose was measured and gets these wrong: Ravager's
+  // intro says Omnivamp while its rows are about Bonus Damage, and Fae's names
+  // three stats for a two-value row. Both must stay empty.
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Slayer'), [], 'Ravager');
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Fae'), []);
+  assert.deepEqual(traitValueIcons(18, 'DA_18_Solar'), [], 'already carries explicit icons');
+});
+
+test('an unconfigured trait or set injects nothing', () => {
+  assert.deepEqual(traitValueIcons(18, 'DA_18_NotATrait'), []);
+  assert.deepEqual(traitValueIcons(17, 'TFT17_AssassinTrait'), []);
+  assert.deepEqual(traitValueIcons(99, 'DA_18_Defender'), []);
+});
+
+test('every configured icon key is a real one', () => {
+  for (const id of ['DA_18_Defender', 'DA_18_Adaptor']) {
+    for (const k of traitValueIcons(18, id)) {
+      assert.ok(k in STAT_ICONS, `${id}: ${k} is not a defined stat icon`);
+    }
+  }
 });
