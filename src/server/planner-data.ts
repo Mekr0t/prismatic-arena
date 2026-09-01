@@ -48,7 +48,15 @@ export async function getPlannerData(): Promise<PlannerData> {
   ]);
 
   const units: PlannerUnit[] = unitRows
-    .filter((r) => r.cost != null && r.cost >= 1 && r.cost <= 5)
+      // Non-playable entries share the catalog: CDragon lists jungle camps and
+      // training dummies (Krug, Murk Wolf, Rift Herald, Voidspawn, …) as cost-1
+      // "champions". Requiring a trait is what separates a roster from set
+      // dressing — the same rule the loader's roster gate uses — and for set 18
+      // it removes exactly those 11 and leaves all 74 real champions.
+    .filter(
+      (r) =>
+        r.cost != null && r.cost >= 1 && r.cost <= 5 && (r.trait_ids?.length ?? 0) > 0,
+    )
     .map((r) => {
       const traits = r.trait_ids ?? [];
       // Only carry the entries that differ from 1, so the payload stays small

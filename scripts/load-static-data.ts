@@ -491,6 +491,13 @@ function resolveDesc(
   } while (text !== prevEmpty);
 
   text = text
+    // CDragon ships some set-18 abilities with the ESCAPE SEQUENCE written out
+    // as text — the characters backslash-r backslash-n rather than the control
+    // characters — so 49 descriptions rendered a visible "\n" mid-sentence
+    // instead of breaking the line. Convert those first, then normalise real
+    // CR/CRLF, so both spellings end up as one newline.
+    .replace(/\\r\\n|\\n|\\r/g, '\n')
+    .replace(/\r\n?/g, '\n')
     .replace(/\s+\)/g, ')')             // fix " )" → ")"
     .replace(/\(\s+/g, '(')             // fix "( " → "("
     .replace(/[ \t]{2,}/g, ' ')          // collapse double spaces (keep newlines)
