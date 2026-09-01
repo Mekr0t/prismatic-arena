@@ -88,6 +88,71 @@ function classifierReport(items: { apiName?: string; name?: string }[], set: num
   return { total: prefixed.length, emblems, artifacts, radiants, missedEmblems, missedArtifacts };
 }
 
+/**
+ * Are a set's ABILITY NUMBERS published yet?
+ *
+ * Separate from the roster gate on purpose: set 18 loaded fine while every one
+ * of its ability descriptions rendered with the numbers missing, because
+ * CDragon ships `variables: []` for 72 of its 74 champions.
+ *
+ * The values live in the per-character bin at
+ * `game/characters/<id>.cdtb.bin.json`, and set 18's are STUBS — every champion
+ * publishes the identical spell block: one calculation keyed `{d678dbfb}` and
+ * DataValues literally named `DataValue` / `OtherValue`. A real one (set 17's
+ * Briar) names them after the ability: `ModifiedDamage`, `ADDamage`, `APDamage`.
+ *
+ * So the tell is simple — do the champions differ from each other, and are the
+ * names readable? Sampled rather than exhaustive: 74 fetches to answer a
+ * yes/no question is rude to CDragon, and stubs are identical by definition.
+ */
+async function abilityDataReport(
+  champions: { apiName?: string; cost?: number; traits?: string[] }[],
+): Promise<{
+  sampled: number;
+  reachable: number;
+  distinctShapes: number;
+  readableNames: number;
+  stub: boolean;
+}> {
+  // PLAYABLE champions only. The set list also carries jungle camps and
+  // training dummies, and those are long-standing units whose bins DO hold real
+  // spell data — sampling one reports "available" for a set whose actual roster
+  // is still stubbed. Same has-a-trait rule the roster gate uses.
+  const sample = champions
+    .filter((c) => c.apiName && (c.cost ?? 0) >= 1 && (c.cost ?? 0) <= 5 && (c.traits?.length ?? 0) > 0)
+    .slice(0, 5);
+  let reachable = 0;
+  let readableNames = 0;
+  const shapes = new Set<string>();
+
+  for (const c of sample) {
+    const url = `${CDRAGON}/latest/game/characters/${String(c.apiName).toLowerCase()}.cdtb.bin.json`;
+    const res = await fetch(bust(url), { cache: 'no-store' }).catch(() => null);
+    if (!res?.ok) continue;
+    reachable++;
+    const j = (await res.json()) as Record<string, unknown>;
+    const key = Object.keys(j).find((k) => /\/Spells\/[^/]*Spell$/i.test(k));
+    const spell = key ? ((j[key] as Record<string, unknown>)?.mSpell as Record<string, unknown>) : null;
+    const calcs = Object.keys((spell?.mSpellCalculations as object) ?? {});
+    const dvs = ((spell?.DataValues as { name?: string }[]) ?? []).map((d) => String(d.name));
+    // A stub keys its calculation by hash and names its values generically.
+    const named = calcs.some((k) => !/^\{[0-9a-f]{8}\}$/.test(k)) ||
+      dvs.some((n) => !/^(Data|Other)Value$/i.test(n));
+    if (named) readableNames++;
+    shapes.add(JSON.stringify([calcs.sort(), dvs.sort()]));
+  }
+
+  return {
+    sampled: sample.length,
+    reachable,
+    distinctShapes: shapes.size,
+    readableNames,
+    // Every sampled champion sharing one shape, with no readable names, is the
+    // signature of a template record rather than real per-champion data.
+    stub: reachable > 1 && shapes.size === 1 && readableNames === 0,
+  };
+}
+
 (async () => {
   const arg = process.argv[2] ?? process.env.SET_NUMBER;
   const [live, pbe] = await Promise.all([cdragon('latest'), cdragon('pbe')]);
@@ -146,6 +211,30 @@ function classifierReport(items: { apiName?: string; name?: string }[], set: num
     }
     if (!rep.missedEmblems.length && !rep.missedArtifacts.length) {
       console.log('  no id-shape mismatches — the classifiers handle this set as-is.');
+    }
+
+    // Loadable and "ability numbers present" are different questions; this set
+    // has been loadable for days with every ability rendering numberless.
+    const entry = canonicalEntry(live.data.setData ?? [], set);
+    const ab = await abilityDataReport(entry?.champions ?? []);
+    console.log(`
+ability numbers (per-character bins, ${ab.reachable}/${ab.sampled} reachable):`);
+    if (ab.stub) {
+      console.log(
+        `  NOT YET — all ${ab.reachable} sampled champions publish the SAME spell block ` +
+          `with generic value names. Riot has not shipped the real data, so ability
+` +
+          `  descriptions will keep rendering without their numbers. Nothing to do but wait.`,
+      );
+    } else if (ab.readableNames > 0) {
+      console.log(
+        `  AVAILABLE — ${ab.readableNames}/${ab.reachable} sampled champions name their spell ` +
+          `values after the ability. The per-character bins are worth wiring up:
+` +
+          `  they resolve the @Var@ placeholders CDragon's own variables array does not.`,
+      );
+    } else {
+      console.log(`  inconclusive — ${ab.reachable} bins reachable, ${ab.distinctShapes} distinct shapes.`);
     }
   } else {
     const have = rosterSize(canonicalEntry(live.data.setData ?? [], set));

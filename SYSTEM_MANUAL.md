@@ -71,7 +71,7 @@ scripts/
                          0 when loadable / 1 when not:
                            until npx tsx scripts/_set-readiness.ts; do sleep 600;
                            done && npm run data:load
-                         When ready it also checks the item classifiers against
+                         It also reports whether the set's ABILITY NUMBERS are published — a separate question from loadability, since set 18 was loadable for days while every ability rendered numberless. The values live in the per-character bin (`game/characters/<id>.cdtb.bin.json`); set 18's are STUBS, every champion publishing the identical spell block with one hash-keyed calculation and DataValues named `DataValue`/`OtherValue`, where a real one names them after the ability (`ModifiedDamage`, `ADDamage`). Samples five PLAYABLE champions — the camps and dummies in the set list are long-standing units whose bins DO hold real data, and sampling one reported "available" for a stubbed roster. Calibrated both ways: set 18 reports NOT YET, set 17 reports AVAILABLE. When ready it also checks the item classifiers against
                          the new set's ids — calibrated so set 17 reports clean,
                          because a checker that cries wolf gets ignored
   merge-eval.ts          Read-only Stage-6 merge replay + labeled-pairs eval (`npm run merge:eval`)
