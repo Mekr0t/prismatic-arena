@@ -159,18 +159,37 @@ export async function persistMatch(
       return 'meta-only';
     }
 
+    // Per-board TIER, from the tiers the crawl has already resolved. One
+    // indexed read, no Riot calls — the crawler resolves a candidate's tier at
+    // drain time and caches it on `accounts`, so by the time a match is
+    // persisted the seed's tier is always known and the other seven are known
+    // whenever they have been drained themselves.
+    //
+    // This is not the same fact as `rank_bucket`. The bucket is the tier of the
+    // player the crawl drained to REACH this match, stamped on all eight boards;
+    // measured 2026-09-02, ~44 % of boards labelled master_plus were played by
+    // Diamond or Emerald accounts, because the EUW Master population is small
+    // enough this early in the set that matchmaking widens. The bucket is the
+    // sampling frame; this is the player. Both are worth keeping.
+    const tierRows = await client.query<{ puuid: string; tier: string }>(
+      `SELECT puuid, upper(tier) AS tier
+         FROM accounts WHERE puuid = ANY($1::text[]) AND tier IS NOT NULL`,
+      [realParticipants.map((p) => p.puuid)],
+    );
+    const tierByPuuid = new Map(tierRows.rows.map((r) => [r.puuid, r.tier]));
+
     // One insert for all 8 participants. RETURNING puuid alongside id is what
     // lets the child rows below attach to the right parent without a second read.
     const inserted = await client.query<{ id: string; puuid: string }>(
       `INSERT INTO match_participants
          (match_id, puuid, placement, level, last_round,
-          players_elim, gold_left, total_dmg, companion, rank_bucket)
+          players_elim, gold_left, total_dmg, companion, rank_bucket, tier)
        SELECT $1, v.puuid, v.placement, v.level, v.last_round,
-              v.players_elim, v.gold_left, v.total_dmg, v.companion::jsonb, $10
+              v.players_elim, v.gold_left, v.total_dmg, v.companion::jsonb, $10, v.tier
          FROM unnest($2::text[], $3::int[], $4::int[], $5::int[],
-                     $6::int[], $7::int[], $8::int[], $9::text[])
+                     $6::int[], $7::int[], $8::int[], $9::text[], $11::text[])
               AS v(puuid, placement, level, last_round,
-                   players_elim, gold_left, total_dmg, companion)
+                   players_elim, gold_left, total_dmg, companion, tier)
        ON CONFLICT (match_id, puuid) DO NOTHING
        RETURNING id, puuid`,
       [
@@ -184,6 +203,10 @@ export async function persistMatch(
         realParticipants.map((p) => p.total_damage_to_players),
         realParticipants.map((p) => JSON.stringify(p.companion ?? null)),
         bucket,
+        // NULL where the player has never been drained — an honest "we could not
+        // establish it", filled in later by ladder-crawl's stamp pass rather
+        // than guessed at from the lobby's bucket.
+        realParticipants.map((p) => tierByPuuid.get(p.puuid) ?? null),
       ],
     );
 

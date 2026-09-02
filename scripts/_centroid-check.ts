@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { pool } from '@/lib/db';
 import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 import { isEmblemItem, MIN_BOARD_UNITS } from '@/server/queue/comp-signature';
+import { tiersAtOrAbove } from '@/config/rank-buckets';
 import {
   ASSIGN_BAR,
   MIN_SEPARATION,
@@ -26,11 +27,24 @@ import {
 // generated names read like something a player would say? Not part of `npm test`
 // — it needs a populated database.
 //
-//   npx tsx scripts/_centroid-check.ts [rank_bucket] [set]
+// The first argument selects the population either way it can be named:
+//   a rank_bucket   — the SAMPLING FRAME, i.e. the tier of the player the crawl
+//                     drained to reach the lobby (`master_plus`)
+//   a tier scope    — the PLAYER's own tier, cumulative (`master+`, `gold+`)
+// They are not the same population and the gap is large: measured 2026-09-02,
+// the master_plus bucket held 14,616 set-18 boards of which only 7,283 were
+// played by a Master+ account.
+//
 //   npx tsx scripts/_centroid-check.ts master_plus 18
+//   npx tsx scripts/_centroid-check.ts master+ 18
 
-const BUCKET = process.argv[2] ?? 'master_plus';
+const POPULATION = process.argv[2] ?? 'master_plus';
 const SET = Number(process.argv[3] ?? 18);
+const TIER_SCOPE = POPULATION.endsWith('+') ? tiersAtOrAbove(POPULATION.slice(0, -1)) : null;
+if (TIER_SCOPE?.length === 0) {
+  console.error(`unrecognised tier scope "${POPULATION}" — expected e.g. gold+, diamond+, master+`);
+  process.exit(1);
+}
 
 interface LoadedBoard extends CentroidBoard {
   placement: number;
@@ -82,9 +96,16 @@ async function loadBoards(costs: Map<string, number>): Promise<LoadedBoard[]> {
        FROM match_participants mp
        JOIN matches m ON m.match_id = mp.match_id
       WHERE m.queue_id = $1 AND m.set_number = $2 AND m.player_count = 8
-        AND mp.rank_bucket = $3 AND mp.placement IS NOT NULL
+        AND mp.placement IS NOT NULL
+        AND ($4::text[] IS NULL OR mp.tier = ANY($4::text[]))
+        AND ($3::text IS NULL OR mp.rank_bucket = $3)
       ORDER BY mp.id`,
-    [RANKED_TFT_QUEUE_ID, SET, BUCKET],
+    [
+      RANKED_TFT_QUEUE_ID,
+      SET,
+      TIER_SCOPE ? null : POPULATION,
+      TIER_SCOPE ? (TIER_SCOPE as unknown as string[]) : null,
+    ],
   );
   const placement = new Map<string, number>();
   for (const r of parts.rows) placement.set(r.id, r.placement);
@@ -142,7 +163,7 @@ async function main() {
   const { statics, costs } = await loadStatics();
   const boards = await loadBoards(costs);
   if (boards.length === 0) {
-    console.log(`no clusterable boards for set ${SET} / ${BUCKET}`);
+    console.log(`no clusterable boards for set ${SET} / ${POPULATION}`);
     await pool.end();
     return;
   }
@@ -152,7 +173,7 @@ async function main() {
   const res = convergeCentroids(groups);
   const ms = Date.now() - t0;
 
-  console.log(`\n=== set ${SET} · ${BUCKET} ===`);
+  console.log(`\n=== set ${SET} · ${POPULATION} ===`);
   console.log(`boards ${res.totalBoards} · distinct unit-sets ${groups.length}`);
   console.log(
     `seed ${SEED_COUNT} · separation ${MIN_SEPARATION} · bar ${ASSIGN_BAR}  ->  ` +

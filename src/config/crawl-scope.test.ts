@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketForTier, inScopeBuckets } from '@/config/rank-buckets';
+import { TIER_ORDER, bucketForTier, inScopeBuckets, tiersAtOrAbove } from '@/config/rank-buckets';
 import { isRetryableStatus } from '@/lib/riot/types';
 
 // The queue reconciler decides which QUEUED work survives an env change, so a
@@ -69,4 +69,34 @@ test('a bad request is NOT retryable', () => {
   for (const s of [400, 404]) {
     assert.equal(isRetryableStatus(s), false, `${s} should not be retryable`);
   }
+});
+
+// ── cumulative tier scopes ───────────────────────────────────────────────────
+
+test('a cumulative scope is every tier at or above the floor', () => {
+  assert.deepEqual(tiersAtOrAbove('MASTER'), ['MASTER', 'GRANDMASTER', 'CHALLENGER']);
+  assert.deepEqual(tiersAtOrAbove('DIAMOND'), ['DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER']);
+});
+
+test('gold+ contains master+, which is the point of the dial', () => {
+  // Weaker tiers WIDEN the sample rather than describing a different meta, so
+  // every scope must be a superset of the ones above it.
+  const gold = new Set(tiersAtOrAbove('gold'));
+  for (const t of tiersAtOrAbove('master')) assert.equal(gold.has(t), true, `${t} missing from gold+`);
+});
+
+test('the floor is case-insensitive and the weakest floor is the whole ladder', () => {
+  assert.deepEqual(tiersAtOrAbove('gold'), tiersAtOrAbove('GOLD'));
+  assert.deepEqual(tiersAtOrAbove('iron'), [...TIER_ORDER]);
+});
+
+test('an unrecognised floor selects NOTHING rather than the whole ladder', () => {
+  // A typo in a scope must show an empty tier list, not silently widen to every
+  // rank — that failure would look like working data.
+  assert.deepEqual(tiersAtOrAbove('platinium'), []);
+  assert.deepEqual(tiersAtOrAbove(''), []);
+});
+
+test('every tier in the order maps to a real bucket', () => {
+  for (const t of TIER_ORDER) assert.notEqual(bucketForTier(t), 'unknown', `${t} has no bucket`);
 });

@@ -298,6 +298,33 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       );
     }
 
+    // STAMP boards whose player's tier we have since resolved. A board is
+    // written with the tier known at persist time, and for a player discovered
+    // in that very match that is nothing — so without this the column would only
+    // ever describe accounts the crawl had already drained. This is the right
+    // place for it because this stage is what resolves tiers in the first place;
+    // it is one indexed UPDATE, bounded so it can never turn a 5-minute pass
+    // into a table sweep. Boards are stamped ONCE and never re-stamped: the tier
+    // is as-sampled, and a stats site that retroactively re-ranks its own
+    // history cannot be aggregated.
+    const stampLimit = envInt('CRAWL_TIER_STAMP_LIMIT', 20_000);
+    const stamped = await query(
+      `WITH pending AS (
+         SELECT mp.id, upper(a.tier) AS tier
+           FROM match_participants mp
+           JOIN accounts a ON a.puuid = mp.puuid AND a.tier IS NOT NULL
+          WHERE mp.tier IS NULL
+          LIMIT $1
+       )
+       UPDATE match_participants mp SET tier = p.tier
+         FROM pending p WHERE p.id = mp.id
+       RETURNING mp.id`,
+      [stampLimit],
+    );
+    if (stamped.length > 0) {
+      console.log(`[ladder-crawl] stamped ${stamped.length} board(s) with a newly resolved tier`);
+    }
+
     console.log(
       `[ladder-crawl] frontier drain — ${seeds.length} candidates, enqueued ${enqueued}, ` +
         `tier lookups ${tierLookups} (${unknownLookups} exploratory), ` +

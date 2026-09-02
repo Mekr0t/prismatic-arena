@@ -92,8 +92,14 @@ const boardCounts = async (matchId: string) => {
   return r[0];
 };
 
+/** One synthetic player is given a resolved tier before the persist, so the
+ *  per-board tier stamp has something to find. The rest have no account row at
+ *  all, which is the ordinary case for a player first seen in this very match. */
+const TIERED_PUUID = `ZZTESTPUUID${String(1).padStart(60, '0')}`;
+
 const cleanup = async () => {
   await query(`DELETE FROM matches WHERE match_id = ANY($1::text[])`, [ALL_IDS]); // cascades
+  await query(`DELETE FROM accounts WHERE puuid LIKE 'ZZTESTPUUID%'`);
 };
 
 let failures = 0;
@@ -115,6 +121,13 @@ try {
   // NOTE: don't try to count statements by wrapping pool.connect — pg's
   // pool.query() calls connect() in CALLBACK form internally, so a promise-only
   // wrapper swallows the callback and every query hangs.
+  await query(
+    `INSERT INTO accounts (puuid, routing, tier, tier_checked_at)
+     VALUES ($1, 'europe', 'GRANDMASTER', now())
+     ON CONFLICT (puuid) DO UPDATE SET tier = EXCLUDED.tier`,
+    [TIERED_PUUID],
+  );
+
   const t0 = Date.now();
   await persistMatch(dto, 'master_plus');
   console.log(`persisted 8 participants / 18 units / 16 traits / 10 augments in ${Date.now() - t0}ms\n`);
@@ -136,6 +149,24 @@ try {
     [MATCH_ID],
   );
   check('rank_bucket written from the crawl seed', rb, [{ rank_bucket: 'master_plus', n: 8 }]);
+
+  // The bucket is the SAMPLING FRAME (the crawl seed's tier, on all eight
+  // boards); `tier` is the player's own, and only where the crawl has actually
+  // resolved it. Measured 2026-09-02, ~44 % of live master_plus boards were
+  // played by Diamond-or-below accounts, so the two must not be assumed equal.
+  const boardTiers = await query<{ tier: string | null; n: number }>(
+    `SELECT tier, count(*)::int n FROM match_participants WHERE match_id = $1 GROUP BY 1 ORDER BY 2 DESC`,
+    [MATCH_ID],
+  );
+  check("tier stamped from the player's own account, NULL where unresolved", boardTiers, [
+    { tier: null, n: 7 },
+    { tier: 'GRANDMASTER', n: 1 },
+  ]);
+  const tierWho = await query<{ puuid: string }>(
+    `SELECT puuid FROM match_participants WHERE match_id = $1 AND tier IS NOT NULL`,
+    [MATCH_ID],
+  );
+  check('  ... on the right board', tierWho, [{ puuid: TIERED_PUUID }]);
 
   const p1 = await query<{ character_id: string; copy_index: number; star_tier: number; item_ids: string[]; is_carry: boolean }>(
     `SELECT pu.character_id, pu.copy_index, pu.star_tier, pu.item_ids, pu.is_carry

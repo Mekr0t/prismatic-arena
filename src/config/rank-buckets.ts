@@ -125,3 +125,42 @@ export function inScopeBuckets(tiers: readonly string[]): Set<RankBucket> | null
   }
   return out;
 }
+
+/**
+ * Riot's ranked tiers, weakest first. The order is the whole point: cumulative
+ * scopes ("gold+", "master+") are a slice of this list, not a set of labels.
+ */
+export const TIER_ORDER = [
+  'IRON',
+  'BRONZE',
+  'SILVER',
+  'GOLD',
+  'PLATINUM',
+  'EMERALD',
+  'DIAMOND',
+  'MASTER',
+  'GRANDMASTER',
+  'CHALLENGER',
+] as const;
+
+export type Tier = (typeof TIER_ORDER)[number];
+
+/**
+ * Every tier at or above `floor` — what a cumulative scope selects on.
+ *
+ * WHY CUMULATIVE. A board that wins in Iron and loses in Master is not a
+ * different meta; Iron is less punishing, so it tolerates plays that do not
+ * work. The strongest available evidence is the truth, and weaker tiers only
+ * ever widen the SAMPLE — which makes the rank control a dial ("how far down am
+ * I willing to reach for sample") rather than a set of separate metas. Hence
+ * gold+ / platinum+ / emerald+ / diamond+ / master+, each containing everything
+ * above it, in place of the disjoint buckets.
+ *
+ * An unrecognised floor returns an empty list rather than silently widening to
+ * everything — a typo in a scope must select nothing visible, not the whole
+ * ladder.
+ */
+export function tiersAtOrAbove(floor: string): Tier[] {
+  const i = TIER_ORDER.indexOf(floor.toUpperCase() as Tier);
+  return i < 0 ? [] : TIER_ORDER.slice(i) as unknown as Tier[];
+}
