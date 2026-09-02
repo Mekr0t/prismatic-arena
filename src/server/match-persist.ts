@@ -130,7 +130,12 @@ export async function persistMatch(
   try {
     await client.query('BEGIN');
 
-    const patchId = await resolvePatchId(client, info.tft_set_number, info.game_version ?? '');
+    const patchId = await resolvePatchId(
+      client,
+      info.tft_set_number,
+      info.game_version ?? '',
+      info.game_datetime,
+    );
 
     await client.query(
       `INSERT INTO matches

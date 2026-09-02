@@ -36,6 +36,52 @@ export function placeholderPatch(setNumber: number): string {
 export const UNVERSIONED_LABEL = 'Unversioned';
 
 /**
+ * A patch string: `<major>.<minor>` with an optional lowercase hotfix suffix.
+ *
+ * The suffix is not decoration. TFT on Unreal is no longer tied to the League
+ * client's release train, so Riot ships an out-of-band fix whenever something
+ * breaks the meta — 18.1, then 18.1a, then 18.1b, then 18.2. Those are separate
+ * metas and have to be separate patches, which means the shape has to admit them
+ * and the ORDERING has to place them correctly. The previous guard
+ * (`^[0-9]+[.][0-9]+$`) excluded them outright, so a hotfix could never have
+ * taken the current-patch flag.
+ */
+export const PATCH_RE = /^(\d+)\.(\d+)([a-z]*)$/;
+
+export interface ParsedPatch {
+  major: number;
+  minor: number;
+  /** '' for a base patch, 'a' / 'b' / … for an out-of-band fix. */
+  hotfix: string;
+}
+
+/** Parse a patch string, or null when it is not one. */
+export function parsePatch(patch: string): ParsedPatch | null {
+  const m = PATCH_RE.exec(patch.trim().toLowerCase());
+  return m ? { major: Number(m[1]), minor: Number(m[2]), hotfix: m[3] } : null;
+}
+
+/**
+ * Order two patch strings oldest-first. Numeric on the numbers — "16.10" comes
+ * after "16.9", which plain string comparison gets backwards — and the base
+ * patch comes before its own hotfixes, so 18.1 < 18.1a < 18.1b < 18.2.
+ * Unparseable strings sort before everything, since the only ones in the data
+ * predate the format.
+ */
+export function comparePatch(a: string, b: string): number {
+  const pa = parsePatch(a);
+  const pb = parsePatch(b);
+  if (!pa || !pb) return !pa && !pb ? (a < b ? -1 : a > b ? 1 : 0) : !pa ? -1 : 1;
+  return (
+    pa.major - pb.major ||
+    pa.minor - pb.minor ||
+    // '' < 'a' < 'b' — and localeCompare would treat them as equal-ish under
+    // some collations, so compare the raw strings.
+    (pa.hotfix < pb.hotfix ? -1 : pa.hotfix > pb.hotfix ? 1 : 0)
+  );
+}
+
+/**
  * Resolves the patches row id for (setNumber, derived patch), creating it on
  * first sight. Returns null when the version string has no parseable patch.
  * Runs on a transaction-scoped client so callers can fold it into their own
@@ -60,7 +106,36 @@ export async function resolvePatchId(
   client: PoolClient,
   setNumber: number,
   gameVersion: string,
+  gameDatetimeMs?: number | null,
 ): Promise<number | null> {
+  // A DECLARED CALENDAR WINS, when the set has one.
+  //
+  // Set 18 ships no version at all ("TFT Unreal Version ?.?.?.?"), and TFT on
+  // Unreal is no longer tied to the League release train — Riot ships 18.1, then
+  // 18.1a out of band when something breaks the meta, then 18.2, on no schedule
+  // anyone can derive. Nothing in the payload distinguishes those, so the only
+  // honest source is a boundary someone declared: `npm run patch:open` writes
+  // `released_at`, and a match belongs to the latest patch released at or before
+  // it was played.
+  //
+  // Sets that DO carry a real game_version have no released_at rows and fall
+  // straight through to the derivation below, unchanged — which matters, because
+  // 515 k set-17 matches depend on it.
+  if (gameDatetimeMs != null && Number.isFinite(gameDatetimeMs)) {
+    const onCalendar = await client.query<{ id: number }>(
+      `SELECT id FROM patches
+        WHERE set_number = $1
+          AND released_at IS NOT NULL
+          AND released_at <= to_timestamp($2::double precision / 1000.0)
+        ORDER BY released_at DESC
+        LIMIT 1`,
+      [setNumber, gameDatetimeMs],
+    );
+    // No row means the match predates the first declared boundary — fall through
+    // rather than guessing, so pre-calendar matches keep the patch they had.
+    if (onCalendar.rows[0]) return onCalendar.rows[0].id;
+  }
+
   const parsed = patchFromVersion(gameVersion);
   const patch = parsed ?? placeholderPatch(setNumber);
 
@@ -161,19 +236,28 @@ export async function advanceCurrentPatch(): Promise<{ patch: string; changed: b
   // BELOW the "18.0" placeholder, so ordering on the number alone would pin the
   // flag to the placeholder forever once real versions started arriving.
   //
-  // Numeric, not lexical — "16.10" must sort after "16.9". The regex guard
-  // keeps split_part(...)::int from throwing on any row that predates
-  // patchFromVersion's format (the 0004 backfill derived the same shape, but a
-  // cast that can throw has no business being load-bearing).
+  // A DECLARED boundary wins over an inferred one. `released_at` is set only by
+  // `npm run patch:open`, i.e. by someone who watched the patch land; ordering on
+  // it first means the flag follows what was declared rather than what a string
+  // comparison makes of the numbers. Rows without one keep the old derivation.
+  //
+  // Numeric, not lexical — "16.10" must sort after "16.9". The hotfix suffix is
+  // split out of the minor component so 18.1 < 18.1a < 18.1b (see comparePatch);
+  // without that split the ::int cast throws on "1a" and the whole flag advance
+  // fails. The regex guard keeps the cast off any row that predates the format
+  // (the 0004 backfill derived the same shape, but a cast that can throw has no
+  // business being load-bearing).
   const winner = await one<{ id: number; patch: string }>(
     `SELECT p.id, p.patch
        FROM patches p
       WHERE p.set_number = $1
-        AND p.patch ~ '^[0-9]+[.][0-9]+$'
+        AND p.patch ~ '^[0-9]+[.][0-9]+[a-z]*$'
         AND EXISTS (SELECT 1 FROM matches m WHERE m.patch_id = p.id)
       ORDER BY (p.patch <> $2) DESC,
+               p.released_at DESC NULLS LAST,
                split_part(p.patch, '.', 1)::int DESC,
-               split_part(p.patch, '.', 2)::int DESC
+               regexp_replace(split_part(p.patch, '.', 2), '[^0-9]', '', 'g')::int DESC,
+               regexp_replace(split_part(p.patch, '.', 2), '[0-9]', '', 'g') DESC
       LIMIT 1`,
     [setNumber, placeholderPatch(setNumber)],
   );

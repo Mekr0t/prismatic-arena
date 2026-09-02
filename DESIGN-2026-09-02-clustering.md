@@ -1,6 +1,6 @@
 # Comp clustering rework — design draft
 
-**Status:** revision 3 (2026-09-02). The model is implemented as a pure, tested
+**Status:** revision 4 (2026-09-02). The model is implemented as a pure, tested
 module and is NOT wired into the pipeline — see §12. Measurements are from the
 live database, set 18, ranked queue only, `player_count = 8`, boards of at least
 `MIN_BOARD_UNITS` (6) real cost-1–5 units.
@@ -410,8 +410,9 @@ mid-patch. So within a patch, a re-election matches new profiles against the
 existing persisted centroids by core Jaccard and keeps the id on a match
 ≥ `MIN_SEPARATION`; only genuinely new lines get new ids.
 
-**This depends on being able to detect a patch, which is currently broken — see
-§11.**
+**This depends on being able to detect a patch**, which is now possible — but by
+declaration rather than detection, because TFT on Unreal follows no release
+train. See §11.1.
 
 Feasibility: `master_plus` accumulated 9,056 boards between 2026-08-27 and
 2026-09-01, about 1,800/day. Over a two-week patch that is roughly 25,000 boards
@@ -546,22 +547,50 @@ no augment-gated units in set 18, so `REQUIRE_HERO_AUGMENT_CLASS` and
 
 ## 11. Prerequisites found during review
 
-None of these is broken today; each one gates part of the design above and has to
-exist before that part can ship.
+Both of the blocking ones are now closed. What remains is a sample-size caveat,
+not a gate.
 
-### 11.1 Patch boundaries are not detectable from the data
+### 11.1 Patch boundaries are not detectable — **RESOLVED, by declaring them**
 
-Set 18 has not had a patch yet, so nothing is broken today — but the mechanism to
-detect one does not exist. Riot reports
-`game_version = "TFT Unreal Version ?.?.?.?"` for **every** set-18 match, and all
-19,519 of them resolve to one synthetic patch row, `18.0` labelled `Unversioned`.
+Riot reports `game_version = "TFT Unreal Version ?.?.?.?"` for every set-18
+match, so all of them resolve to one synthetic patch row, `18.0` labelled
+`Unversioned`. Revision 2 proposed a date-keyed patch calendar. That was the
+right shape and the wrong mechanism: **TFT on Unreal is no longer tied to the
+League client's release train**, so there is no cadence to key a calendar on —
+Riot ships 18.1, then 18.1a out of band when something breaks the meta, then
+18.2, whenever they choose.
 
-So per-patch election (§7) cannot key on `game_version`. It needs a **date-keyed
-patch calendar** — `released_at` filled in on `patches`, and `patch_id` resolved
-by comparing `matches.game_datetime` against it — maintained by hand, because the
-data does not carry the patch. Same seam as the known `game_version` ≠ official
-TFT patch mismatch. Not urgent, but it has to exist before the first patch lands,
-or that patch's boards get pooled with this one's.
+Nothing in the payload distinguishes those, so the boundary cannot be inferred
+or predicted. The only honest source is someone who watched it land, which makes
+it a declaration rather than a derivation:
+
+```
+npm run patch:open -- 18.1
+npm run patch:open -- 18.1a --at "2026-09-10T11:00:00Z"
+```
+
+It writes `patches.released_at`, moves `is_current`, and **re-resolves the
+matches already stored past the boundary** — the part that matters, because in
+practice it is run hours after the patch dropped, and without it "run it when I
+notice" mislabels everything in between. `comp_stats` needs no repair: the
+rollup is a full recompute, so the next pipeline pass picks the new `patch_id`
+up.
+
+`resolvePatchId` prefers a declared boundary when the set has one and otherwise
+falls through to the existing `game_version` derivation unchanged, so the 515k
+set-17 matches keep resolving exactly as they do now.
+
+**Not an env var.** A variable records *which* patch, never *when* it started, so
+it cannot place matches already ingested and cannot be re-derived; it needs a
+restart to take effect; and it goes stale the moment nobody remembers to update
+it — the failure `advanceCurrentPatch`'s own header warns about. A boundary is a
+fact about a moment in time, so it belongs in a row.
+
+**Hotfix patches are first-class.** `18.1a` and `18.1b` are separate metas and
+so separate patches. The previous ordering guard (`^[0-9]+[.][0-9]+$`) excluded
+them outright, which would have left a hotfix unable to take the current-patch
+flag; the suffix is now split out of the minor component so `18.1 < 18.1a <
+18.1b < 18.2` and the `::int` cast never sees `"1a"`.
 
 ### 11.2 Per-board tier is not stored — **RESOLVED**
 
