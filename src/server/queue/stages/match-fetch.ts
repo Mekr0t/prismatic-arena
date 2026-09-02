@@ -1,4 +1,5 @@
-import { riot, Priority, routeForPlatform } from '@/lib/riot';
+import { riot, Priority, routeForPlatform, RiotApiError } from '@/lib/riot';
+import { isRetryableStatus } from '@/lib/riot/types';
 import type { Platform } from '@/config/regions';
 import { query } from '@/lib/db';
 import { persistMatch } from '@/server/match-persist';
@@ -13,6 +14,30 @@ import type { JobContext } from '../job-tracking';
 // candidate (accounts, ON CONFLICT DO NOTHING). That feedback is what expands the
 // frontier: the ~7 other players in each lobby become future seeds for the
 // ladder-crawl drain. The seed itself is marked crawled by ladder-crawl at enqueue.
+
+/**
+ * Thrown when EVERY id in a batch failed. `retryable` separates the two causes
+ * that need opposite handling downstream:
+ *
+ *   retryable  — an outage, a rate limit, or an expired key. Says nothing about
+ *                this player, so the batch is worth another attempt and the
+ *                account must NOT stay burned for the re-crawl window.
+ *   permanent  — a malformed or deleted id. Retrying re-spends the budget on a
+ *                request that will fail identically every time.
+ *
+ * The same distinction ladder-crawl already draws for its tier lookups; it was
+ * simply never available on this side, so an expired-key window burned apex
+ * accounts for 12 h having fetched nothing.
+ */
+export class MatchFetchError extends Error {
+  constructor(
+    message: string,
+    public readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = 'MatchFetchError';
+  }
+}
 
 export interface MatchFetchJob {
   platform: string;
@@ -38,6 +63,9 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   // did. Failures are counted; the job only fails if EVERY id failed, so a real
   // outage still surfaces as a failed job rather than a silent no-op.
   const errors: string[] = [];
+  // Tracked alongside the messages so the all-failed throw can say WHY, rather
+  // than leaving the caller to parse it back out of the text.
+  let retryableFailures = 0;
 
   for (const matchId of data.matchIds) {
     try {
@@ -64,6 +92,8 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
       stored += 1;
       ctx.setItems(stored);
     } catch (err) {
+      const status = err instanceof RiotApiError ? err.status : 0;
+      if (isRetryableStatus(status)) retryableFailures += 1;
       errors.push(`${matchId}: ${(err as Error).message}`);
       console.warn(`[match-fetch] skipping ${matchId}: ${(err as Error).message}`);
     }
@@ -90,8 +120,9 @@ export async function runMatchFetch(data: MatchFetchJob, ctx: JobContext): Promi
   // Throw so BullMQ retries and ingestion_jobs records it, instead of reporting
   // a successful pass that stored nothing.
   if (errors.length > 0 && stored === 0 && skipped === 0) {
-    throw new Error(
+    throw new MatchFetchError(
       `all ${errors.length} match fetches failed — first: ${errors[0]}`,
+      retryableFailures > 0,
     );
   }
 }

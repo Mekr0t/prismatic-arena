@@ -4,8 +4,9 @@ import { bullConnection } from './connection';
 import { makeQueue, QUEUE } from './queues';
 import { withJobTracking, reconcileStuckJobs } from './job-tracking';
 import { CRAWL } from '@/config/crawl';
-import { runLadderCrawl, type LadderCrawlJob } from './stages/ladder-crawl';
-import { runMatchFetch, type MatchFetchJob } from './stages/match-fetch';
+import { runLadderCrawl, releaseCrawlCandidate, type LadderCrawlJob } from './stages/ladder-crawl';
+import { runMatchFetch, MatchFetchError, type MatchFetchJob } from './stages/match-fetch';
+import { reconcileCrawlScope } from './scope-reconcile';
 import { runCluster, type ClusterJob } from './stages/cluster';
 import { runRollup, type RollupJob } from './stages/rollup';
 import { runTrendTier, type TrendTierJob } from './stages/trend-tier';
@@ -105,9 +106,21 @@ ladderWorker.on('failed', (job, err) =>
 ladderWorker.on('error', (err) => console.error('[ladder-crawl] error:', err));
 
 matchWorker.on('completed', (job) => console.log(`[match-fetch] completed: ${job.id}`));
-matchWorker.on('failed', (job, err) =>
-  console.log(`[match-fetch] failed: ${job?.id} — ${err.message}`),
-);
+matchWorker.on('failed', (job, err) => {
+  console.log(`[match-fetch] failed: ${job?.id} — ${err.message}`);
+  // A batch that has spent all its attempts on RETRYABLE failures took its
+  // player's crawl slot without fetching anything. Hand the slot back, or the
+  // account sits out the whole re-crawl window for an outage that was never
+  // about them — which is how one expired-key window flatlined master_plus for
+  // a day (the apex frontier is ~126 accounts, so it takes exactly one).
+  const exhausted = job !== undefined && job.attemptsMade >= (job.opts.attempts ?? 1);
+  if (!exhausted || !(err instanceof MatchFetchError) || !err.retryable) return;
+  const puuid = job.data?.puuid;
+  if (!puuid) return;
+  releaseCrawlCandidate(puuid)
+    .then(() => console.log(`[match-fetch] released ${puuid} for an early re-crawl`))
+    .catch((e) => console.error('[match-fetch] release failed:', e));
+});
 matchWorker.on('error', (err) => console.error('[match-fetch] error:', err));
 
 clusterWorker.on('completed', (job) => {
@@ -176,6 +189,26 @@ reconcileStuckJobs(STUCK_JOB_MINUTES)
     if (n > 0) console.log(`[worker] reconciled ${n} stuck 'running' job row(s) from a previous run`);
   })
   .catch((e) => console.error('[worker] stuck-job reconcile failed:', e));
+
+// Make the match-fetch queue agree with CRAWL_TIERS. Boot is the right moment
+// because it is when an env change takes effect — the rank gate only governs
+// what gets enqueued, so without this a narrowed scope leaves the old wide-scope
+// backlog to drain first, ahead of the work you actually asked for. Same
+// contract as the reconcile above: advisory, bounded, fire-and-forget.
+reconcileCrawlScope()
+  .then((r) => {
+    if (r.inScopeBuckets === null) {
+      console.log('[worker] crawl scope is "all" — no queue reconciliation needed');
+      return;
+    }
+    if (r.droppedWaiting || r.droppedFailed || r.retriedFailed) {
+      console.log(
+        `[worker] crawl scope [${r.inScopeBuckets.join(', ')}] — dropped ${r.droppedWaiting} queued ` +
+          `and ${r.droppedFailed} failed out-of-scope match-fetch job(s), re-offered ${r.retriedFailed} in-scope failure(s)`,
+      );
+    }
+  })
+  .catch((e) => console.error('[worker] crawl-scope reconcile failed:', e));
 
 // Remove the repeatable schedules and exit. Run with: SCHED_CLEAR=1 npm run worker
 if (process.env.SCHED_CLEAR === '1') {

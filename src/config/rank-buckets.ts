@@ -98,3 +98,30 @@ export function tierInScope(tier: string | null | undefined, scope: readonly str
   const t = tier.toUpperCase();
   return scope.some((s) => s.toUpperCase() === t);
 }
+
+/**
+ * The buckets reachable from a tier scope — the same question as `tierInScope`,
+ * asked of work that is already queued rather than of a candidate.
+ *
+ * WHY IT EXISTS. The rank gate only decides what gets ENQUEUED, so narrowing
+ * `CRAWL_TIERS` does nothing to batches already in the queue, and BullMQ is
+ * FIFO: the old wide-scope jobs drain first while the ones you actually want
+ * wait behind them. Measured 2026-09-02, hours after the scope was narrowed to
+ * master+ — 355 match-fetch jobs waiting, of which 226 were iron_gold /
+ * unknown / plat_emerald from before the change, sitting in front of 126 apex
+ * batches. Every board landing that minute was low-elo, with the gate working
+ * perfectly the whole time.
+ *
+ * Derived from `bucketForTier` rather than listed, so the two can never
+ * disagree. Returns NULL for the `all` scope — that is "no gate", and a set of
+ * every bucket known today would silently exclude any bucket added tomorrow.
+ */
+export function inScopeBuckets(tiers: readonly string[]): Set<RankBucket> | null {
+  if (tiers.some((t) => t.toLowerCase() === 'all')) return null;
+  const out = new Set<RankBucket>();
+  for (const t of tiers) {
+    if (t.toLowerCase() === 'unranked') out.add('unknown');
+    else out.add(bucketForTier(t));
+  }
+  return out;
+}
