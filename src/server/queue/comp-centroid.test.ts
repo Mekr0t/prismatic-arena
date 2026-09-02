@@ -356,6 +356,43 @@ test('a name that does not collide is left exactly as it was', () => {
   assert.deepEqual(resolveNameCollisions(['One', 'Two'], [a, b], statics()), ['One', 'Two']);
 });
 
+test('identical cores fall through to the FLEX band for a differentiator', () => {
+  // Measured on master_plus: two Aphelios lines with the same six core units,
+  // 20pp apart on top-4, separated only by their flex slots. A core-only search
+  // finds nothing and leaves a 744-board line sharing a name with a 190-board
+  // one.
+  const a = centroid(
+    profile(['Malphite', 1], ['Ahri', 1], ['Azir', 1], ['Yunara', 0.74], ['Soraka', 0.72]),
+    744,
+    0,
+  );
+  const b = centroid(
+    profile(['Malphite', 1], ['Ahri', 1], ['Azir', 1], ['Karma', 0.51], ['Kennen', 0.35]),
+    190,
+    1,
+  );
+  const out = resolveNameCollisions(['N', 'N'], [a, b], statics());
+  assert.equal(out[0], 'N Yunara'); // highest-rate unit b does not field at all
+  assert.equal(out[1], 'N Karma');
+  assert.notEqual(out[0], out[1]);
+});
+
+test('a core-unique unit still wins over a higher-rate flex one', () => {
+  // The flex fallback must not demote the core rule: an expensive unit the line
+  // always fields identifies it better than a coin-flip slot.
+  const a = centroid(profile(['Malphite', 1], ['Kennen', 0.95], ['Yunara', 0.6]), 50, 0);
+  const b = centroid(profile(['Malphite', 1], ['Ahri', 0.9], ['Karma', 0.6]), 40, 1);
+  const out = resolveNameCollisions(['N', 'N'], [a, b], statics());
+  assert.equal(out[0], 'N Kennen'); // core, not the 60% Yunara
+  assert.equal(out[1], 'N Ahri');
+});
+
+test('truly indistinguishable profiles are left alone rather than given a fake difference', () => {
+  const a = centroid(profile(['Malphite', 1], ['Ahri', 1]), 10, 0);
+  const b = centroid(profile(['Malphite', 1], ['Ahri', 1]), 9, 1);
+  assert.deepEqual(resolveNameCollisions(['N', 'N'], [a, b], statics()), ['N', 'N']);
+});
+
 test('collision resolution prefers the highest-cost distinguishing unit', () => {
   const a = centroid(profile(['Malphite', 1], ['Karma', 1], ['Kennen', 1]), 10, 0);
   const b = centroid(profile(['Malphite', 1], ['Ahri', 1]), 9, 1);

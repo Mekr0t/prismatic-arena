@@ -498,12 +498,58 @@ export function nameCentroid(
 }
 
 /**
+ * The unit that distinguishes one collider from the rest: something in its
+ * profile that appears in no other collider's profile at all.
+ *
+ * CORE units are preferred and tie-broken on cost — a line is best identified by
+ * an expensive unit it always fields. But the search must not STOP at the core,
+ * because two lines can share an identical core and still be different lines:
+ * measured on master_plus, two Aphelios/Brambleback lines had the same six core
+ * units and sat 20pp apart on top-4 (51.3% against 31.6%), separated only by
+ * their flex band — Zyra 74% / Taric 72% against Rakan 51% / Elise 35%. A
+ * core-only search finds nothing there and leaves both lines sharing a name,
+ * which is how a 744-board line and a 190-board one become indistinguishable in
+ * a list. Falling through to the flex band names them Zyra and Elise.
+ *
+ * Null only when the profiles are genuinely indistinguishable, which convergence
+ * should already have collapsed.
+ */
+function differentiatingUnit(
+  mine: Centroid,
+  others: readonly Centroid[],
+  statics: NameStatics,
+): string | null {
+  const elsewhere = new Set<string>();
+  for (const o of others) for (const u of o.units) elsewhere.add(u.characterId);
+  const mineOnly = mine.units.filter((u) => !elsewhere.has(u.characterId));
+  if (mineOnly.length === 0) return null;
+
+  const core = mineOnly.filter((u) => u.rate >= CORE_RATE);
+  if (core.length > 0) {
+    return core.sort(
+      (a, b) =>
+        (statics.unitCosts?.get(b.characterId) ?? 0) - (statics.unitCosts?.get(a.characterId) ?? 0) ||
+        (a.characterId < b.characterId ? -1 : 1),
+    )[0].characterId;
+  }
+  // Flex band: rate first, because the point is to name the slot that actually
+  // separates the two lines, and a rare expensive unit separates them less than
+  // a common cheap one.
+  return mineOnly.sort(
+    (a, b) =>
+      b.rate - a.rate ||
+      (statics.unitCosts?.get(b.characterId) ?? 0) - (statics.unitCosts?.get(a.characterId) ?? 0) ||
+      (a.characterId < b.characterId ? -1 : 1),
+  )[0].characterId;
+}
+
+/**
  * Disambiguate lines that generated the same name.
  *
  * Colliding lines are genuinely different — the four `Malphite Ahri` lookalikes
  * sat at 0.29–0.57 core Jaccard, and one of them placed 1.9 better than another
  * — so the fix is to say what differs, not to merge them. Each collider appends
- * the highest-cost core unit no other collider has; that is deterministic from
+ * its distinguishing unit (see `differentiatingUnit`); that is deterministic from
  * the profiles alone, unlike the old `##k:<compId>` suffix, which churned
  * whenever membership was rebuilt and 404'd every shared link.
  *
@@ -524,15 +570,10 @@ export function resolveNameCollisions(
   const out = [...names];
   for (const [, idxs] of byName) {
     if (idxs.length < 2) continue;
-    const cores = idxs.map((i) => coreUnits(centroids[i]));
     idxs.forEach((i, k) => {
-      const others = cores.filter((_, j) => j !== k);
-      const unique = [...cores[k]].filter((u) => !others.some((o) => o.has(u)));
-      if (unique.length === 0) return; // identical cores: nothing honest to add
-      const pick = unique.sort(
-        (a, b) =>
-          (statics.unitCosts?.get(b) ?? 0) - (statics.unitCosts?.get(a) ?? 0) || (a < b ? -1 : 1),
-      )[0];
+      const others = idxs.filter((_, j) => j !== k).map((j) => centroids[j]);
+      const pick = differentiatingUnit(centroids[i], others, statics);
+      if (pick === null) return; // indistinguishable profiles: nothing honest to add
       out[i] = `${names[i]} ${statics.unitNames.get(pick) ?? pick}`;
     });
   }

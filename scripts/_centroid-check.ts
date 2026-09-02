@@ -211,6 +211,25 @@ async function main() {
   const marker = names.filter((n) => n.startsWith('Monolith '));
   if (marker.length > 0) problems.push(`${marker.length} line(s) named after the Monolith marker trait`);
 
+  // Name a colliding pair rather than only counting it: the fix is always in
+  // what the two lines actually share, so the report has to show it.
+  const seenNames = new Map<string, number[]>();
+  for (const c of listed) {
+    const arr = seenNames.get(names[c.index]);
+    if (arr) arr.push(c.index);
+    else seenNames.set(names[c.index], [c.index]);
+  }
+  for (const [nme, idxs] of seenNames) {
+    if (idxs.length < 2) continue;
+    console.log(`\n  collision "${nme}":`);
+    for (const i of idxs) {
+      const c = res.centroids.find((x) => x.index === i)!;
+      console.log(
+        `    #${i} ${c.boards} boards  raw="${rawNames[i]}"  core: ${[...coreUnits(c)].map(shortId).join(', ')}`,
+      );
+    }
+  }
+
   console.log(problems.length === 0 ? '\nOK — no invariant violations' : `\nPROBLEMS:\n  ${problems.join('\n  ')}`);
   await pool.end();
   if (problems.length > 0) process.exitCode = 1;

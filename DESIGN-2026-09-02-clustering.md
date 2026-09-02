@@ -413,11 +413,18 @@ So the grouping is sound and the *naming* is what fails. Two fixes:
    beating Ezreal and Yunara on a tie-break. Restricting candidates to units at
    rate ≥ 0.8 and ranking by itemisation rate (not raw count) renames #61 to
    *Monolith Malphite Yunara* and removes it from the collision.
-2. **Append the distinguishing core unit on the remainder.** #26, #67 and #133
+2. **Append the distinguishing unit on the remainder.** #26, #67 and #133
    genuinely do carry Malphite and Ahri; what separates them is Alune, Karma and
-   the Fiddlesticks/Yunara shell. Appending the highest-cost core unit unique to
-   each — only on collision, so unique names stay clean — is deterministic and
-   does not reintroduce the `##k` suffix.
+   the Fiddlesticks/Yunara shell. Appending the unit unique to each — only on
+   collision, so unique names stay clean — is deterministic and does not
+   reintroduce the `##k` suffix. **The search must not stop at the core.** Two
+   lines can share an identical core and still be different lines: at 14.5k
+   `master_plus` boards, two Aphelios/Brambleback lines had the same six core
+   units and sat **20pp apart on top-4** (51.3% against 31.6%), separated only by
+   their flex band — Zyra 74% / Taric 72% against Rakan 51% / Elise 35%. Prefer a
+   core unit, tie-broken on cost; fall through to the highest-rate flex unit no
+   other collider fields at all. That names them *Zyra* and *Elise*, and merging
+   them instead would have hidden a 554-board difference in placement.
 
 Note also that three of these four sit below any sensible floor (15, 11 and 3
 boards). At the §5 coverage target only #26 is listed, so most of the collision
