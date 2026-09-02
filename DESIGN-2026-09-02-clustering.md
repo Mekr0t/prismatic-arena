@@ -1,24 +1,40 @@
 # Comp clustering rework — design draft
 
-**Status:** draft, not implemented. Revision 2 (2026-09-02), after review.
-Measurements are from the live database, set 18, ranked queue only,
-`player_count = 8`, boards of at least `MIN_BOARD_UNITS` (6) real cost-1–5 units.
+**Status:** revision 3 (2026-09-02). The model is implemented as a pure, tested
+module and is NOT wired into the pipeline — see §12. Measurements are from the
+live database, set 18, ranked queue only, `player_count = 8`, boards of at least
+`MIN_BOARD_UNITS` (6) real cost-1–5 units.
 
 **Replaces:** the exact-signature clustering in
 `src/server/queue/comp-signature.ts` + `stages/cluster.ts`, the greedy archetype
 merge in `comp-merge.ts` + `comp-profile.ts` + `stages/merge.ts`, and the disjoint
 rank/region bucketing in `src/config/rank-buckets.ts`.
 
-**What changed in revision 2:** centroids are elected from `master_plus` alone
-and frozen (§5); rank buckets become cumulative sample dials rather than separate
-metas (§5); regions become super-regions (§6); centroid identity is patch-scoped,
-which removes the retirement machinery (§7); lines get a generated
-trait + carry + carry name (§8); composition thresholds are pinned (§9). Three
-prerequisites surfaced during review and are listed in §11.
+**What changed in revision 3:** the rank model turned out to rest on a false
+premise. `rank_bucket` is the tier of the player the crawler *drained*, not of
+the player who played the board, and at the top of the ladder those are not the
+same population — **~44% of the "Master+" sample is Diamond or below** (§5.1).
+`match_participants.tier` now records the board's own player (migration 0021),
+which resolves the §11.2 prerequisite, unlocks the cumulative scopes, and means
+every measurement in revisions 1–2 quoted against `master_plus` was taken on a
+mixed population. §4, §5.3 and §5.5 are re-measured against the true `master+`.
+The pure module exists: `src/server/queue/comp-centroid.ts`, 33 tests, driven by
+`scripts/_centroid-check.ts`.
+
+**Revision 2 established:** centroids elected from the top of the ladder and
+frozen (§5); rank buckets as cumulative sample dials; super-regions (§6);
+patch-scoped centroid identity, which deleted the retirement machinery (§7);
+generated trait + carry + carry names (§8); pinned composition thresholds (§9).
 
 ---
 
 ## 1. Where the data actually is
+
+> **Read the bucket names with §5.1 in mind.** `iron_gold` and `master_plus` are
+> *sampling frames* — the tier of the player the crawler drained — not the ranks
+> of the players who played the boards. The figures in §1, §2 and §4 are quoted
+> against those frames because that is what they were measured on; §5 onward uses
+> the real per-board tier.
 
 | | `iron_gold` | `master_plus` |
 |---|---:|---:|
@@ -184,6 +200,11 @@ Seed 300 / separation 0.70 / bar 0.45 is the default for both. `master_plus`
 supports nearly twice the lines on a tenth of the data (189 vs 106): `iron_gold`
 boards pile onto fewer real lines with more variation around each.
 
+These are the revision-2 figures, taken on the sampling frames. Re-measured on
+the real tier (§5.1), the true `master+` population is 7,216 clusterable boards
+and elects **202 lines at 93.5% homed** — more lines from half the data, which
+sharpens rather than contradicts the point above.
+
 ### Off-meta boards are genuinely worse, so do not force them in
 
 | | boards | avg placement | top 4 | win |
@@ -205,33 +226,77 @@ simply less punishing, so it tolerates plays that do not work. The strongest
 available evidence is the truth, and weaker ranks only ever widen the sample —
 they never redefine what a good board is.
 
-### 5.1 Cumulative tiers replace disjoint buckets
+### 5.1 First: the bucket is not the rank
+
+`rank_bucket` is the tier of the player the crawler **drained to reach** a match,
+stamped onto all eight boards, on the stated grounds that TFT lobbies are
+rank-homogeneous. Measured against `accounts.tier`, that does not hold where it
+matters most:
+
+| boards labelled `master_plus`, by the tier of the player who played them | |
+|---|---:|
+| MASTER | 6,124 |
+| DIAMOND | **3,087** |
+| EMERALD | **2,274** |
+| GRANDMASTER | 919 |
+| PLATINUM | **61** |
+
+Roughly **44% of the "Master+" sample is Diamond or below**. That is not a crawl
+bug — the EUW Master population is ~120 accounts this early in a set, so
+matchmaking widens and pulls Diamond and Emerald players into those lobbies. But
+it means `master_plus` describes *where a board was sampled*, not who played it,
+and the two were being read as the same thing.
+
+So the true `master+` population is **7,283 boards, not the 14,616** the bucket
+claimed, and every measurement in revisions 1–2 taken "on master_plus" was taken
+on a mixed population.
+
+**Migration 0021** adds `match_participants.tier`: the board's own player's tier,
+*as sampled* and never updated afterwards — a board played in Gold stays a Gold
+board when its player climbs, because a stats site that retroactively re-ranks
+its own history cannot be aggregated. NULL means "could not establish" and is
+never folded into a named tier. `rank_bucket` stays in place; the bucket is the
+sampling frame, the tier is the player, and they answer different questions.
+
+### 5.2 Cumulative tiers replace disjoint buckets
 
 `iron_gold` / `plat_emerald` / `master_plus` become **gold+, platinum+,
-emerald+, diamond+, master+**, each containing everything above it. The dial says
-"how far down am I willing to reach for sample", not "which meta am I looking at".
+emerald+, diamond+, master+**, each containing everything above it, selected on
+`tier` rather than on the bucket. The dial says "how far down am I willing to
+reach for sample", not "which meta am I looking at". Live sizes:
 
-Note this needs the board's **actual tier**, which is not what
-`match_participants.rank_bucket` stores today — see §11.
+| scope | boards |
+|---|---:|
+| gold+ | 32,698 |
+| platinum+ | 18,734 |
+| emerald+ | 13,348 |
+| diamond+ | 10,433 |
+| **master+** | **7,283** |
 
-### 5.2 Centroids are elected from `master_plus` and frozen
+### 5.3 Centroids are elected from `master+` and frozen
 
-Lower-rank boards are assigned into the master-elected profiles; they never
-create a centroid and never move one. Measured:
+Wider-scope boards are assigned into the master-elected profiles; they never
+create a centroid and never move one. Re-measured on true tier scopes:
 
-| bucket | boards | into master-elected centroids | with its own centroids | cost |
+| scope | boards | into `master+` centroids | with its own centroids | cost |
 |---|---:|---:|---:|---:|
-| `plat_emerald` | 13,558 | **89.3% homed** | 93.3% (195 centroids) | −4.0pp |
-| `iron_gold` | 91,957 | **79.8% homed** | 88.2% (110 centroids) | −8.4pp |
+| diamond+ | 10,342 | **93.1% homed** | 93.3% (182) | −0.2pp |
+| emerald+ | 13,207 | **93.0% homed** | 93.3% (173) | −0.3pp |
+| platinum+ | 18,489 | **92.1% homed** | 93.3% (186) | −1.2pp |
+| gold+ | 32,017 | **88.7% homed** | 91.4% (150) | −2.7pp |
 
-**And the boards master centroids reject are the bad boards.** In `iron_gold`,
-boards homed into a master centroid average 4.25; the 18,574 rejected ones
-average **5.31**. In `plat_emerald`, 4.36 vs **5.53**. The 8.4pp that
-iron-elected centroids would have "recovered" is exactly the set of lines that
-only exist in low ranks and place badly there. Rejecting them is the correct
-behaviour, and the off-meta bucket is where they belong.
+This is a much better result than revision 2 measured, and for two reasons: the
+centroids are now elected from a clean population rather than a 44%-Diamond one,
+and `gold+` excludes the Iron–Silver boards where the off-meta tail lived. The
+cost of freezing the top-of-ladder centroids is **2.7pp at gold+ and under 1.3pp
+everywhere above it** — against revision 2's 8.4pp.
 
-### 5.3 Not `gm+` — the sample does not exist
+**And the boards master+ centroids reject are still the bad boards.** At gold+,
+homed boards average 4.19 placement against **5.12** for the 3,630 rejected ones;
+the same gap holds at every scope. Rejecting them is correct, and the off-meta
+bucket is where they belong.
+
+### 5.4 Not `gm+` — the sample does not exist
 
 `gm+` is the right instinct and is not currently reachable:
 
@@ -251,38 +316,43 @@ behaviour, and the off-meta bucket is where they belong.
 total. **Elect from `master_plus`.** Revisit `gm+` only if the crawler is
 re-pointed to seed from the apex leagues directly.
 
-### 5.4 How many lines to list — a relative floor, not a fixed count
+### 5.5 How many lines to list — a relative floor, not a fixed count
 
-"Top 100 by games" is more rows than the data supports. Coverage of the 8,978
-`master_plus` boards by the top-N elected centroids:
+Coverage of the 7,216 true `master+` boards by the top-N elected centroids:
 
-| top N | boards covered | share | Nth centroid's board count |
-|---:|---:|---:|---:|
-| 25 | 6,461 | 72.0% | 60 |
-| 50 | 7,271 | 81.0% | 22 |
-| 100 | 7,987 | 89.0% | **10** |
-| 150 | 8,331 | 92.8% | 5 |
-| 189 | 8,454 | 94.2% | 1 |
+| top N | share of all boards | Nth centroid's board count |
+|---:|---:|---:|
+| 10 | 53.9% | 154 |
+| 25 | 69.9% | 45 |
+| **36** | **75.0%** | **28** |
+| 50 | 79.6% | 20 |
+| 100 | 88.4% | 7 |
+| 202 | 93.5% | 1 |
 
-The 100th line has ten boards. But a fixed floor has the opposite failure — 20
-lines on day one of a patch and 200 by the end of it. **Make the floor relative
-to how much data the patch has.** Two forms, and I would use both:
+A fixed count of 100 lists lines with seven boards. But a fixed floor has the
+opposite failure — 20 lines on day one of a patch and 200 by the end of it.
+**Make the floor relative to how much data the patch has.** Two rules, and I
+would use both:
 
 - **A coverage target as the primary rule.** List the largest lines until they
-  together account for `LIST_COVERAGE` of the bucket's boards — 80% is 50 lines
-  today. This is self-regulating, because it keys on the *shape* of the
+  together account for `LIST_COVERAGE` of the boards that *found a line* — 80% of
+  homed boards, which is 36 lines and 75% of all boards today. The denominator is
+  deliberately the homed population rather than every board: off-meta boards are
+  not a line, so counting them would make the target unreachable and quietly turn
+  the coverage rule back into "list everything". This is self-regulating, because it keys on the *shape* of the
   distribution rather than on counts: as the patch fills, the same lines get
   bigger rather than new ones appearing, so the list length stays roughly stable
-  from day two to day fourteen.
+  from day two to day fourteen. Observed directly: going from 8,978 to 14,485
+  boards moved the listed count from 28 to 31 while coverage stayed at 75%.
 - **An absolute minimum as a safety floor.** `LIST_MIN_BOARDS` (≈20) stops a
-  near-empty early-patch bucket from listing lines with three boards just because
+  near-empty early-patch scope from listing lines with three boards just because
   they are the biggest three.
 
 Whichever rule bounds the list, show each line's sample size and the confidence
 interval on its placement, so a thin line reads as thin instead of being silently
 dropped or silently trusted.
 
-### 5.5 What the rank dial changes on the detail page
+### 5.6 What the rank dial changes on the detail page
 
 Widening to gold+ to get a readable itemisation sample is exactly right. But
 widening also changes *placement*, and low-rank placement for a master-defined
@@ -493,28 +563,54 @@ data does not carry the patch. Same seam as the known `game_version` ≠ officia
 TFT patch mismatch. Not urgent, but it has to exist before the first patch lands,
 or that patch's boards get pooled with this one's.
 
-### 11.2 Per-board tier is not stored
+### 11.2 Per-board tier is not stored — **RESOLVED**
 
-Cumulative tiers (§5.1) need the board's actual tier. `match_participants.rank_bucket`
-holds only the coarse legacy label; the real tier lives in `accounts.tier` for
-crawled accounts and rides `MatchFetchJob.bucket` into `persistMatch`, which
-downgrades it to a bucket on write. Needs: a `tier` column on
-`match_participants` written from the same source, plus a decision about the
-existing set-18 boards — backfillable only where the seed account's tier is still
-known, and honest as `unknown` where it is not.
+Closed by migration 0021 (§5.1). `match_participants.tier` carries the board's
+own player's tier, written three ways so the column does not decay: `persistMatch`
+stamps it from `accounts` in the same transaction (one indexed read, no Riot
+calls); `ladder-crawl` fills boards whose player has since been resolved, bounded
+by `CRAWL_TIER_STAMP_LIMIT`; and the migration backfills what was already known.
 
-### 11.3 `master_plus` sample is thin, and crawl-limited
+Coverage is 25% of all set-18 boards but **86% of the `master_plus` ones**, which
+is exactly where the correction matters. It rises on its own as the crawl
+resolves more accounts.
 
-8,978 boards over 189 centroids is ~47 boards per line, and the profile *rates*
-(the CORE/flex percentages) are estimated from that. Core units are safe; a "58%
-flex" from 47 boards carries roughly ±14pp. The §5.4 floor handles the display
-side, but the underlying constraint is that only 103 Master accounts have been
-crawled. Re-run §4 and §5 once `master_plus` passes ~25k boards before fixing the
-defaults.
+### 11.3 The `master+` sample is thinner than revision 2 thought
+
+Revision 2 recorded 8,978 `master_plus` boards over 189 lines, ~47 each. With the
+bucket resolved into a real tier, the honest figure is worse: **7,216 boards over
+202 lines, ~36 each**. Core units are safe at that sample; a "58% flex" from 36
+boards carries roughly ±16pp, so the flex *rates* should be read as indicative
+until the sample grows.
+
+The constraint behind it was the crawl, and that has changed materially. After
+the 2026-09-02 ingest fixes, `master_plus` gained more boards in 45 minutes than
+in the previous three days, so this resolves on its own within days rather than
+weeks. **Re-run §4, §5.3 and §5.5 against `master+` — not `master_plus` — once
+the scope passes ~25k boards, before fixing any defaults.**
 
 ---
 
-## 12. What this deletes
+## 12. Implementation status
+
+The pure module exists and is not wired into the chain:
+
+- `src/server/queue/comp-centroid.ts` — seeding, scoring, convergence, collapse,
+  listing and naming. No DB access, no set knowledge; statics are passed in, the
+  same contract as `carry-classify.ts`.
+- `src/server/queue/comp-centroid.test.ts` — 33 tests pinning the load-bearing
+  properties (order-independence, safe over-seeding, the marker-trait exclusion,
+  the flex-band collision tiebreak).
+- `scripts/_centroid-check.ts` — read-only run against the live database, taking
+  either a rank bucket or a cumulative tier scope. Fails on three invariants: a
+  centroid with no boards, two listed lines sharing a name, and any line named
+  after a marker trait. It is what caught both naming defects.
+
+Nothing in the live read path has changed.
+
+---
+
+## 13. What this deletes
 
 From `comp-merge.ts` (1,362 lines) and its 28 env knobs:
 
@@ -546,21 +642,23 @@ From `comp-merge.ts` (1,362 lines) and its 28 env knobs:
 
 ---
 
-## 13. Validation path
+## 14. Validation path
 
 The 32 labelled pairs in `scripts/merge-eval-pairs.json` (25 `merge`, 7 `split`)
 reference 52 comp ids — **all 52 are set 17**, and all still exist, as do
 **515,010 set-17 boards**. That is a real regression corpus with human labels.
 
-1. Build the new model as a pure module (`comp-centroid.ts`) with unit tests, the
-   way `comp-signature.ts` is tested — seeding, scoring, convergence, collapse and
-   naming are all pure functions.
-2. Run it over the set-17 boards offline. For each labelled pair, check whether
-   the two comps' boards land in the same centroid. Any disagreement is a finding
-   about either the model or the label.
-3. Run it over set 18 offline and eyeball the lines and their generated names
-   against the game.
-4. Resolve §11.1 and §11.2 — a patch calendar and a per-board tier column.
+1. ~~Build the new model as a pure module with unit tests.~~ **Done** — §12.
+2. **Downgraded from a gate to an optional floor.** Running the set-17 pairs
+   sounded stronger than it is: 25 of the 32 are `merge` labels, and the new model
+   merges far more aggressively by construction, so those pass close to trivially.
+   The 7 `split` pairs are the only ones that could genuinely fail, and they encode
+   set-17 semantics — hero augments, gated units, reroll targets — that do not
+   exist in set 18. Worth one run as a regression floor; not worth blocking on.
+3. Run it over set 18 and eyeball the lines and their generated names against the
+   game. **This is the real test**, and it is what caught both naming defects
+   (§8) — not any pair file.
+4. Resolve the patch calendar (§11.1). The per-board tier column is done (§11.2).
 5. Write into new tables behind the existing chain, with the old clustering still
    populating the live read path.
 6. Cut the read plane over once the numbers are inspected side by side.
@@ -569,17 +667,19 @@ Steps 1–3 are read-only and safe against the live database.
 
 ---
 
-## 14. Risks
+## 15. Risks
 
 - **It is a full re-cluster.** Every comp id, every `/comps/[key]` URL and every
   `comp_stats` row is rebuilt. The staged path exists so this happens once.
 - **The 32 pairs are set-17 semantics.** Passing them proves the model is not
   worse than today on cases someone already looked at; it does not prove it is
   right on set 18.
-- **The whole model now rests on `master_plus`.** If the crawl loses apex seeds,
-  the centroid set degrades and everything downstream degrades with it. The
-  election should refuse to run below a minimum `master_plus` board count rather
-  than quietly electing from noise.
+- **The whole model now rests on `master+`.** If the crawl loses apex seeds, the
+  centroid set degrades and everything downstream degrades with it. The election
+  should refuse to run below a minimum board count rather than quietly electing
+  from noise — and it must count boards by TIER, not by bucket, or a lobby full of
+  Diamond players keeps the count looking healthy while the population it
+  describes drifts (§5.1).
 - **Cost is fine:** 36,190 unit-sets × ~300 profiles ≈ 11M set operations per
   iteration, ~10 iterations. Seconds, and it scales with distinct unit-sets × k
   rather than with total boards.
