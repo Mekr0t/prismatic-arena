@@ -85,8 +85,8 @@ To collect match data, run the worker alongside the app in a second terminal:
 npm run worker
 ```
 
-The crawl starts narrow on purpose (`CRAWL_TIERS=challenger`, small per-pass
-caps) so a development key survives it. Widen it via the `CRAWL_*` variables in
+The crawl starts narrow on purpose (apex tiers only, small per-pass caps) so a
+development key survives it. Widen it via the `CRAWL_*` variables in
 `.env` — they're all config, no code changes.
 
 ### Scripts
@@ -114,8 +114,8 @@ still apply from scratch.
 
 Active personal project, not a product. The read plane and the ingest pipeline
 both work end to end; the comp scoring and archetype merge logic are the parts
-still being iterated on. `AUDIT-2026-08-17.md` is a live record of known
-weaknesses and measured behaviour, kept honest rather than tidy.
+still being iterated on. `SYSTEM_MANUAL.md` documents the architecture in full:
+every module, its exports, and the invariants they rely on.
 
 ## Disclaimer
 

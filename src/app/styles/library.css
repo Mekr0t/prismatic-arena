@@ -338,3 +338,31 @@
   .lib-layout.has-detail { grid-template-columns: 1fr; }
   .lib-detail            { position: static; max-height: none; }
 }
+
+/* Crafting recipe — the two components, as icons. Reads as provenance, so it
+   sits above the stats and stays quieter than them. Names live in alt/title. */
+.irecipe {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 2px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.irecipe-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.irecipe-plus {
+  opacity: 0.55;
+}
+/* Bigger than they were with labels beside them — the icon is now the whole
+   thing, so it has to be legible on its own. */
+.irecipe-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  flex: none;
+}

@@ -144,10 +144,18 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
     // frontier still gets explored; already-checked out-of-scope players sort
     // last and fall off the LIMIT.
     const scopeUpper = CRAWL.tiers.map((t) => t.toUpperCase());
+    // The tier TTL is PER CLASS. An in-scope tier is re-checked on the ordinary
+    // window because those players are the sample and a demotion matters; a tier
+    // already resolved OUT of scope (or resolved as unranked, hence NULL) is
+    // left alone far longer, because re-resolving it spends a Riot call to learn
+    // what we already knew. One TTL for both is what let the drain re-check the
+    // same low-elo accounts every few days forever.
     const seeds = await query<{ puuid: string; tier: string | null; tier_fresh: boolean }>(
       `SELECT puuid, tier,
               (tier_checked_at IS NOT NULL
-               AND tier_checked_at > now() - make_interval(hours => $3)) AS tier_fresh
+               AND tier_checked_at > now() - make_interval(hours =>
+                     CASE WHEN tier IS NOT NULL AND upper(tier) = ANY($4::text[])
+                          THEN $3 ELSE $5 END)) AS tier_fresh
          FROM accounts
         WHERE last_crawled_at IS NULL
            OR last_crawled_at < now() - make_interval(hours => $2)
@@ -155,13 +163,24 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
                  (tier IS NULL) DESC,
                  last_crawled_at ASC NULLS FIRST
         LIMIT $1`,
-      [CRAWL.maxPuuidsPerRun * SEED_OVERSELECT, recrawlHours, tierTtlHours, scopeUpper],
+      [
+        CRAWL.maxPuuidsPerRun * SEED_OVERSELECT,
+        recrawlHours,
+        tierTtlHours,
+        scopeUpper,
+        CRAWL.outOfScopeTtlHours,
+      ],
     );
 
     let enqueued = 0;
     let fetchBudget = CRAWL.maxMatchFetchesPerPass;
     let skippedOutOfScope = 0;
     let tierLookups = 0;
+    // Lookups spent this pass on candidates with no known tier. Capped — see
+    // CRAWL.exploreUnknownPerPass. Apex players arrive from the ladder in step 1
+    // with their tier already attached, so exploring the frontier is a bonus,
+    // not the mechanism, and it must not eat the pass.
+    let unknownLookups = 0;
     const crawled: string[] = [];
 
     for (const seed of seeds) {
@@ -176,10 +195,16 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
       // snowballing down the ladder while every board claims to be Challenger.
       let tier = seed.tier;
       if (!seed.tier_fresh) {
+        // Budget guard, before the call rather than after it. Deliberately does
+        // NOT mark the candidate crawled: it was never examined, so it stays at
+        // the front of the frontier for the next pass instead of being burned
+        // for the re-crawl window.
+        if (seed.tier === null && unknownLookups >= CRAWL.exploreUnknownPerPass) continue;
         try {
           const entries = await riot.league.byPuuid(platform, puuid, Priority.BATCH);
           tier = entries.find((e) => e.queueType === RANKED_TFT)?.tier ?? null;
           tierLookups += 1;
+          if (seed.tier === null) unknownLookups += 1;
         } catch (err) {
           // A failed lookup means we can't bucket this player's boards, and a
           // wrong bucket is worse than a missing board — so we always skip them
@@ -252,6 +277,13 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
         jobId: `mf:${platform}:${puuid}`,
         removeOnComplete: true, // free the id so a later re-crawl can re-enqueue
         removeOnFail: { count: 500 },
+        // match-fetch throws only when EVERY id failed — an outage or a dead
+        // key. Its comment has always said "throw so BullMQ retries", but with
+        // no attempts option it never did, and one transport blip failed the
+        // batch permanently. A retry re-enters the WAITING list at the back, so
+        // a retrying batch never blocks the ones behind it.
+        attempts: CRAWL.matchFetchAttempts,
+        backoff: { type: 'exponential', delay: CRAWL.matchFetchBackoffMs },
       });
 
       enqueued += 1;
@@ -268,9 +300,37 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
 
     console.log(
       `[ladder-crawl] frontier drain — ${seeds.length} candidates, enqueued ${enqueued}, ` +
-        `tier lookups ${tierLookups}, out-of-scope skipped ${skippedOutOfScope}, budget left ${fetchBudget}`,
+        `tier lookups ${tierLookups} (${unknownLookups} exploratory), ` +
+        `out-of-scope skipped ${skippedOutOfScope}, budget left ${fetchBudget}`,
     );
   } finally {
     await matchFetchQueue.close();
   }
+}
+/**
+ * Un-burn a candidate whose match-fetch could not run for reasons that say
+ * nothing about the player — an outage, a rate limit, an expired key.
+ *
+ * The drain marks a player crawled at ENQUEUE, on purpose, so a player who
+ * fails cannot wedge it. The cost of that choice only shows up at the top of
+ * the ladder: the apex frontier is ~126 accounts, so one expired-key window
+ * burned ALL of them for CRAWL_RECRAWL_HOURS having fetched nothing, and
+ * master_plus flatlined for half a day. Measured 2026-09-02: 190 of 200 sampled
+ * failed match-fetch jobs were apex batches.
+ *
+ * The account is released to `now() - recrawl + retryMinutes` rather than to
+ * NULL: NULL sorts first in the drain (NULLS FIRST), so a permanently unlucky
+ * account would jump the queue every pass — the exact wedge the enqueue-time
+ * mark exists to prevent. A short offset re-offers it soon without giving it
+ * priority over the never-crawled frontier.
+ */
+export async function releaseCrawlCandidate(puuid: string): Promise<void> {
+  const recrawlHours = envInt('CRAWL_RECRAWL_HOURS', 12);
+  const retryMinutes = envInt('CRAWL_FAILED_RETRY_MINUTES', 15);
+  await query(
+    `UPDATE accounts
+        SET last_crawled_at = now() - make_interval(hours => $2) + make_interval(mins => $3)
+      WHERE puuid = $1`,
+    [puuid, recrawlHours, retryMinutes],
+  );
 }

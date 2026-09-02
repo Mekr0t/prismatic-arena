@@ -70,10 +70,58 @@ export function bucketLabel(bucket: string): string {
   return BUCKET_LABELS[bucket] ?? bucket.charAt(0).toUpperCase() + bucket.slice(1);
 }
 
-/** True when a tier is inside the configured crawl scope. Compared on the Riot
- *  tier name so `CRAWL_TIERS` stays human-readable ('challenger,grandmaster'). */
+/**
+ * True when a tier is inside the configured crawl scope. Compared on the Riot
+ * tier name so `CRAWL_TIERS` stays human-readable ('challenger,grandmaster').
+ *
+ * Two scope tokens exist beyond the tier names, and they are what make a crawl
+ * possible AT THE START OF A SET:
+ *
+ *   'all'       — no gate. Every candidate is crawled and bucketed by whatever
+ *                 tier resolves.
+ *   'unranked'  — a candidate with NO resolved tier is in scope. Their boards
+ *                 bucket as 'unknown', which is an honest label rather than a
+ *                 placeholder (see the header of this file).
+ *
+ * WHY THIS IS NEEDED. On set-18 launch day all three EUW apex ladders returned
+ * ZERO entries — the ranked ladder resets, so for the first days of a set there
+ * is no Master+ population to seed from or gate on, and almost every player is
+ * unranked until placements finish. An apex-only scope therefore crawls nothing
+ * at exactly the moment the meta is forming and the data is most wanted. Widen
+ * the scope for that window, then narrow it again once the ladder fills — the
+ * 'unknown' boards stay selectable as their own bucket either way, so nothing
+ * collected during the window contaminates a rank-verified one.
+ */
 export function tierInScope(tier: string | null | undefined, scope: readonly string[]): boolean {
-  if (!tier) return false;
+  if (scope.some((s) => s.toLowerCase() === 'all')) return true;
+  if (!tier) return scope.some((s) => s.toLowerCase() === 'unranked');
   const t = tier.toUpperCase();
   return scope.some((s) => s.toUpperCase() === t);
+}
+
+/**
+ * The buckets reachable from a tier scope — the same question as `tierInScope`,
+ * asked of work that is already queued rather than of a candidate.
+ *
+ * WHY IT EXISTS. The rank gate only decides what gets ENQUEUED, so narrowing
+ * `CRAWL_TIERS` does nothing to batches already in the queue, and BullMQ is
+ * FIFO: the old wide-scope jobs drain first while the ones you actually want
+ * wait behind them. Measured 2026-09-02, hours after the scope was narrowed to
+ * master+ — 355 match-fetch jobs waiting, of which 226 were iron_gold /
+ * unknown / plat_emerald from before the change, sitting in front of 126 apex
+ * batches. Every board landing that minute was low-elo, with the gate working
+ * perfectly the whole time.
+ *
+ * Derived from `bucketForTier` rather than listed, so the two can never
+ * disagree. Returns NULL for the `all` scope — that is "no gate", and a set of
+ * every bucket known today would silently exclude any bucket added tomorrow.
+ */
+export function inScopeBuckets(tiers: readonly string[]): Set<RankBucket> | null {
+  if (tiers.some((t) => t.toLowerCase() === 'all')) return null;
+  const out = new Set<RankBucket>();
+  for (const t of tiers) {
+    if (t.toLowerCase() === 'unranked') out.add('unknown');
+    else out.add(bucketForTier(t));
+  }
+  return out;
 }

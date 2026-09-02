@@ -3,6 +3,8 @@ import { iconUrl } from '@/lib/icon-url';
 import type { PlannerData, PlannerUnit, PlannerTrait, PlannerItem, Breakpoint } from '@/lib/planner/core';
 import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
 import { currentSet } from './static-data';
+import { isSetItem, traitContribution } from './set-config';
+import { traitNameFromEmblem } from '@/lib/emblems';
 
 const TEAMPLANNER_URL =
   'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/tftchampions-teamplanner.json';
@@ -46,15 +48,34 @@ export async function getPlannerData(): Promise<PlannerData> {
   ]);
 
   const units: PlannerUnit[] = unitRows
-    .filter((r) => r.cost != null && r.cost >= 1 && r.cost <= 5)
-    .map((r) => ({
-      id: r.character_id,
-      name: r.name,
-      cost: r.cost!,
-      traits: r.trait_ids ?? [],
-      iconUrl: iconUrl(r.icon_path),
-      plannerCode: teamPlannerCodes.get(r.character_id) ?? null,
-    }));
+      // Non-playable entries share the catalog: CDragon lists jungle camps and
+      // training dummies (Krug, Murk Wolf, Rift Herald, Voidspawn, …) as cost-1
+      // "champions". Requiring a trait is what separates a roster from set
+      // dressing — the same rule the loader's roster gate uses — and for set 18
+      // it removes exactly those 11 and leaves all 74 real champions.
+    .filter(
+      (r) =>
+        r.cost != null && r.cost >= 1 && r.cost <= 5 && (r.trait_ids?.length ?? 0) > 0,
+    )
+    .map((r) => {
+      const traits = r.trait_ids ?? [];
+      // Only carry the entries that differ from 1, so the payload stays small
+      // and `traitCounts` reads as "the exceptions" rather than a full table.
+      const traitCounts: Record<string, number> = {};
+      for (const t of traits) {
+        const n = traitContribution(setNumber, r.character_id, t);
+        if (n !== 1) traitCounts[t] = n;
+      }
+      return {
+        id: r.character_id,
+        name: r.name,
+        cost: r.cost!,
+        traits,
+        iconUrl: iconUrl(r.icon_path),
+        plannerCode: teamPlannerCodes.get(r.character_id) ?? null,
+        ...(Object.keys(traitCounts).length ? { traitCounts } : {}),
+      };
+    });
 
   const traitIdByName = new Map(traitRows.map((t) => [t.name.toLowerCase(), t.trait_id]));
   const traits: PlannerTrait[] = traitRows.map((t) => {
@@ -67,16 +88,16 @@ export async function getPlannerData(): Promise<PlannerData> {
     return { id: t.trait_id, name: t.name, iconUrl: iconUrl(t.icon_path), breakpoints };
   });
 
-  // Keep standard (TFT_Item_*) and current-set (TFT{n}_Item_*) items; classify them.
-  // When the same display name appears in both a global TFT_Item_* and a set-specific
-  // TFT{n}_Item_*, keep whichever has the better kind (lower rank = more specific).
-  const setPrefix = `TFT${setNumber}_Item_`;
+  // Keep the cross-set TFT_Item_* pool plus this set's own namespace (see
+  // set-config.itemIdPrefixes — set 18 ships DA_18_*, not TFT18_Item_*).
+  // When the same display name appears in both, keep whichever has the better
+  // kind (lower rank = more specific).
   const kindRank = { component: 0, craftable: 1, emblem: 2, artifact: 3, other: 4 } as const;
   const itemsByName = new Map<string, PlannerItem>();
   for (const r of itemRows) {
     const id = r.item_id;
     if (!id || !r.name) continue;
-    if (!id.startsWith('TFT_Item_') && !id.startsWith(setPrefix)) continue;
+    if (!isSetItem(setNumber, id)) continue;
     if (ITEM_JUNK.test(id)) continue;
     if (ITEM_NAME_JUNK.test(r.name)) continue;
 
@@ -86,7 +107,7 @@ export async function getPlannerData(): Promise<PlannerData> {
       kind = 'component';
     } else if (/Emblem/i.test(id) || /Emblem/i.test(r.name)) {
       kind = 'emblem';
-      trait = traitIdByName.get(r.name.replace(/\s*Emblem\s*$/i, '').trim().toLowerCase());
+      trait = traitIdByName.get((traitNameFromEmblem(r.name) ?? '').toLowerCase());
     } else if (Array.isArray(r.composition) && r.composition.length === 2) {
       kind = 'craftable';
     } else if (isArtifactItem(id)) {

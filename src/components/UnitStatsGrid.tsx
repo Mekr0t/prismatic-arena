@@ -9,6 +9,8 @@
 // Note the CDragon key for Attack Damage is `damage` (not `attackDamage`); AP
 // is omitted from base stats and defaults to 100.
 
+import { StatLabel } from './StatIcon';
+
 const round = (v: number): string => String(Math.round(v));
 
 /** "base/×mult/×mult²" for a star-scaling stat (no spaces — stays one line). */
@@ -66,7 +68,7 @@ export function UnitStatsGrid({ stats }: { stats: Record<string, number> | null 
     <div className="ustat-grid">
       {lines.map((l) => (
         <div key={l.label} className="ustat">
-          <span className="ustat-k">{l.label}</span>
+          <span className="ustat-k"><StatLabel label={l.label} /></span>
           <span className={`ustat-v${l.scaling ? ' scaling' : ''}`}>{l.value}</span>
         </div>
       ))}

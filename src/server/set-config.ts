@@ -19,6 +19,8 @@
 // several items are thematic renames per set (set 17: Void Staff plays as
 // TFT_Item_StatikkShiv, Kraken's Fury as TFT_Item_RunaansHurricane).
 
+import type { StatIconKey } from '@/lib/stat-icons';
+
 export interface SetConfig {
   setNumber: number;
   /** Champs that can take a hero augment (turns a support/tank into a second
@@ -38,6 +40,100 @@ export interface SetConfig {
    *  from headlining them as plannable builds. Ids are set-prefixed, so the
    *  runtime predicate unions all sets safely. */
   mechanicItemPatterns: readonly RegExp[];
+  /** Id prefixes for THIS set's own items, beyond the cross-set `TFT_Item_`
+   *  pool. The `items` table holds CDragon's whole global catalog under the
+   *  live set number, so a prefix is what separates "this set's items" from
+   *  every other set's — it is not cosmetic. Sets 1-17 all used `TFT{n}_Item_`;
+   *  set 18 ships as `DA_18_`, which is why this stopped being derivable and
+   *  became config. Empty falls back to `TFT{n}_Item_`. */
+  itemIdPrefixes: readonly string[];
+  /** Units that contribute MORE THAN ONE to a trait's unit count.
+   *
+   *  Not derivable from CDragon: the multiplier lives in the trait's prose, not
+   *  in any field. Set 18 has two cases, both verified against Riot's own
+   *  per-board `participant_traits` counts:
+   *    - Elder Dragon counts twice for Riftbeast (35/40 sampled boards showed
+   *      Riot's count at exactly naive+1).
+   *    - Avatar (Lux) counts twice for her CHOSEN trait — "An Avatar's chosen
+   *      Trait is counted twice", per the trait description.
+   *  `traits` lists the trait ids that multiply; `'*'` means every trait the
+   *  unit has EXCEPT those in `exceptTraits` (how Avatar is expressed, since
+   *  each Lux variant carries Avatar plus the one element she chose). */
+  traitMultipliers: readonly TraitMultiplier[];
+  /** Units whose real identity is a VARIANT that Riot's match payload does not
+   *  report. Set 18 reports every Lux as `DA_Lux18_Base` no matter which Avatar
+   *  element she chose — 231 boards, zero variant ids — so the displayed board
+   *  would always show a generic Lux.
+   *
+   *  The choice is still recoverable: Avatar doubles the chosen trait, so that
+   *  trait is over-counted in Riot's own `participant_traits` relative to what
+   *  the board's units explain. Measured over 30 Lux boards, exactly one trait
+   *  was over-counted on every single one — no ambiguous boards, no misses.
+   *
+   *  DISPLAY ONLY. This deliberately does NOT reach comp signatures: which Lux
+   *  you hit is mostly luck rather than a planned line, and she clears several
+   *  breakpoints alone, so splitting comps on it would fragment the data for a
+   *  distinction players do not plan around. */
+  inferredVariants: readonly InferredVariant[];
+  /**
+   * Stat glyphs for trait VALUE rows whose text does not name the stat.
+   *
+   * Some traits publish a bare number — Defender's row is literally
+   * `(@MinUnits@) @DefenderDefenseGain@` — because the game draws the stat icon
+   * itself from the trait's type. Read alone, "25" says nothing.
+   *
+   * One GROUP per slot, where the slots are the gaps CDragon leaves (a run of
+   * two or more spaces, which is where the client draws an icon) in order,
+   * followed by the end of the row. Grouping is needed because placement really
+   * does differ per trait:
+   *
+   *   Adaptor  "@ADAPGain*100@%  OR"        [['ad'], ['ap']]  -> "25% [AD] OR [AP]"
+   *   Fae      "@ADAP@%  and @Heal@% Heal." [['ad','ap']]     -> "5% [AD][AP] and 2% Heal."
+   *   Defender "@DefenderDefenseGain@"      [['armor','mr']]  -> "25 [Armor][MR]"  (no gap, so end)
+   *
+   * CURATED, NOT INFERRED, and the difference matters: inferring the stats from
+   * the trait's intro prose was measured and gets Ravager ("gain 10% Omnivamp"
+   * → rows about Bonus Damage) wrong. A wrong icon reads as fact.
+   */
+  traitValueIcons: Readonly<Record<string, readonly (readonly StatIconKey[])[]>>;
+  /**
+   * Description text CDragon publishes for a trait's mechanic but not for its
+   * CONTENT.
+   *
+   * Set 18's Primal says only "Choose one of four Primal Blessings." and never
+   * names the four — its breakpoints carry no text either, and searching the
+   * whole catalog for the blessing wording ("Primal takedowns", "gain a
+   * component. Max") finds nothing. So the tooltip asked the reader to choose
+   * between options it did not show.
+   *
+   * Appended after the published description, separated by a blank line.
+   * TRANSCRIBED FROM THE CLIENT, never guessed — this renders as fact.
+   */
+  traitDescriptionExtra: Readonly<Record<string, string>>;
+}
+
+export interface InferredVariant {
+  /** The id Riot reports for every member of the family. */
+  base: string;
+  /** POSIX pattern (Postgres `~`) matching the family's real ids. Set 18
+   *  spells them two ways, `DA_18_Lux_*` and `DA_Lux18_*`. */
+  familyPattern: string;
+  /** The trait every variant shares, which therefore never identifies one. */
+  markerTrait: string;
+  /** Over-count that marks the chosen trait. 2 for a doubling mechanic; an
+   *  emblem only ever adds 1, so it cannot produce a false positive. */
+  minDelta: number;
+}
+
+export interface TraitMultiplier {
+  /** Matches character_id. A pattern, because variant families (the ten Lux
+   *  ids) share a rule but not a prefix — set 18 spells them both
+   *  `DA_18_Lux_*` and `DA_Lux18_*`. */
+  unit: RegExp;
+  traits: readonly string[] | '*';
+  exceptTraits?: readonly string[];
+  /** How many the unit counts as. 2 = "counts twice". */
+  count: number;
 }
 
 export const SET_CONFIGS: Record<number, SetConfig> = {
@@ -81,21 +177,64 @@ export const SET_CONFIGS: Record<number, SetConfig> = {
     ],
     augmentGatedUnits: ['TFT17_Zed'], // Invader Zed — augment-only unit
     mechanicItemPatterns: [/AnimaSquadItem_Tier/i, /EkkoOffering_Anomaly/i],
+    itemIdPrefixes: ['TFT17_Item_'],
+    traitMultipliers: [], // set 17 has no unit that counts more than once
+    // Set 17's equivalent (Miss Fortune's Choose Trait) needs no inference —
+    // Riot reports the chosen trait directly.
+    inferredVariants: [],
+    traitValueIcons: {},
+    traitDescriptionExtra: {},
   },
 
-  // ── Set 18 (PBE ~2026-08) — fill from CDragon/patch notes when public. ──────
-  // Copy the shape above with TFT18_* ids. Leave arrays empty for mechanics the
-  // set doesn't have (empty = that feature no-ops for set-18 data; set 17 keeps
-  // its own block untouched). Verify every id against the loaded `units` /
-  // `items` tables — display names lie, apiNames don't.
-  //
-  // 18: {
-  //   setNumber: 18,
-  //   heroAugmentChampions: [],
-  //   damageItems: [],
-  //   augmentGatedUnits: [],
-  //   mechanicItemPatterns: [],
-  // },
+  // ── Set 18 ─────────────────────────────────────────────────────────────────
+  // Ids verified against the loaded `units` / `items` tables, not display names.
+  // heroAugment / damage / gated classification is still unfilled: those need
+  // patch-note reading and a meaningful sample, and an empty array no-ops
+  // cleanly rather than guessing wrong.
+  18: {
+    setNumber: 18,
+    heroAugmentChampions: [],
+    damageItems: [],
+    augmentGatedUnits: [],
+    mechanicItemPatterns: [],
+    // Set 18 breaks the TFT{n}_ convention: its own items ship as DA_18_*
+    // (DA_18_EmblemCoven, …). 156 emblem rows were invisible to the library and
+    // the planner until this was configurable.
+    itemIdPrefixes: ['DA_18_', 'TFT18_Item_'],
+    traitMultipliers: [
+      { unit: /^DA_18_ElderDragon$/, traits: ['DA_Riftbeast18'], count: 2 },
+      // Every Lux variant is Avatar + the one trait she chose; the chosen trait
+      // is the one that doubles, so match on '*' minus Avatar itself. Base Lux
+      // (DA_Lux18_Base) carries only Avatar and correctly doubles nothing.
+      { unit: /^DA_(18_Lux_|Lux18_)/, traits: '*', exceptTraits: ['DA_18_LuxUniqueTrait'], count: 2 },
+    ],
+    inferredVariants: [
+      {
+        base: 'DA_Lux18_Base',
+        familyPattern: '^DA_(18_Lux_|Lux18_)',
+        markerTrait: 'DA_18_LuxUniqueTrait',
+        minDelta: 2,
+      },
+    ],
+    traitValueIcons: {
+      // Split around the "OR": AD fills the gap, AP lands at the end.
+      DA_18_Adaptor: [['ad'], ['ap']],
+      // Both together in the gap — the row continues "and 2% Heal." after them.
+      DA_18_Fae: [['ad', 'ap']],
+      // No gap in the row at all, so the pair goes to the end.
+      DA_18_Defender: [['armor', 'mr']],
+    },
+    traitDescriptionExtra: {
+      // The four Blessings the trait invites you to choose between. Not
+      // published anywhere in the catalog; transcribed from the client.
+      DA_Primal18: [
+        'Primal damage executes enemies below 12% Health.',
+        'Every 15 Primal takedowns, gain a component. Max 4.',
+        'After 6 seconds, Primal champions gain 35% Attack Speed and your team gains 15% Attack Speed',
+        'Your team heals for 4% of their max Health every 4 seconds.',
+      ].join('\n'),
+    },
+  },
 };
 
 // ── Accessors (memoized Sets; warn once per unknown set) ─────────────────────
@@ -152,6 +291,51 @@ export function augmentGatedUnits(setNumber: number): ReadonlySet<string> {
     }
     return s;
   });
+}
+
+/** Id prefixes marking an item as belonging to `setNumber`, beyond the
+ *  cross-set `TFT_Item_` pool. Falls back to the pre-set-18 convention so an
+ *  unconfigured set behaves exactly as it did before this existed. */
+export function itemIdPrefixes(setNumber: number): readonly string[] {
+  const cfg = config(setNumber);
+  const prefixes = cfg?.itemIdPrefixes ?? [];
+  return prefixes.length ? prefixes : [`TFT${setNumber}_Item_`];
+}
+
+/** True when `itemId` belongs to this set (or the cross-set item pool). */
+export function isSetItem(setNumber: number, itemId: string): boolean {
+  if (itemId.startsWith('TFT_Item_')) return true;
+  return itemIdPrefixes(setNumber).some((p) => itemId.startsWith(p));
+}
+
+/** How many `unit` counts as toward `trait`. 1 unless the set says otherwise. */
+export function traitContribution(setNumber: number, unitId: string, traitId: string): number {
+  const cfg = config(setNumber);
+  if (!cfg) return 1;
+  for (const m of cfg.traitMultipliers) {
+    if (!m.unit.test(unitId)) continue;
+    if (m.exceptTraits?.includes(traitId)) continue;
+    if (m.traits === '*' || m.traits.includes(traitId)) return m.count;
+  }
+  return 1;
+}
+
+/** Text to append to a trait's description; empty string when it needs none. */
+export function traitDescriptionExtra(setNumber: number, traitId: string): string {
+  return config(setNumber)?.traitDescriptionExtra?.[traitId] ?? '';
+}
+
+/** Stat glyphs to inject into a trait's value rows; empty when it needs none. */
+export function traitValueIcons(
+  setNumber: number,
+  traitId: string,
+): readonly (readonly StatIconKey[])[] {
+  return config(setNumber)?.traitValueIcons?.[traitId] ?? [];
+}
+
+/** Families whose displayed variant must be inferred; empty for most sets. */
+export function inferredVariants(setNumber: number): readonly InferredVariant[] {
+  return config(setNumber)?.inferredVariants ?? [];
 }
 
 /** Set-mechanic special item? Union across all configured sets — item ids are

@@ -1,7 +1,7 @@
 // Shown instead of a page body when the Riot-backed read limiter rejects a
 // request (src/server/rate-limit.ts). Deliberately plain-language and honest
-// about the cause — the copy convention from TFT-Frontend-Spec.md §6: never
-// system terms, never apologies.
+// about the cause — the copy convention throughout: never system terms,
+// never apologies.
 
 export function RateLimited({ retryAfter }: { retryAfter: number }) {
   const wait = retryAfter > 60 ? `${Math.ceil(retryAfter / 60)} minutes` : `${retryAfter} seconds`;

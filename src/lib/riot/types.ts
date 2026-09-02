@@ -89,3 +89,17 @@ export interface MatchDto {
     participants: MatchParticipantDto[];
   };
 }
+
+/**
+ * True when an HTTP status describes OUR side or the upstream's, never the
+ * request itself: 0 is a transport failure, 401/403 an expired or revoked key,
+ * 429 the rate limiter, 5xx the upstream. A caller can retry these and can
+ * treat them as saying nothing about the resource it asked for.
+ *
+ * The distinction is load-bearing in the crawl: a batch that failed for one of
+ * these reasons is still wanted, while a 400 (malformed id) or 404 will fail
+ * identically forever and retrying it only re-spends the key's budget.
+ */
+export function isRetryableStatus(status: number): boolean {
+  return status === 0 || status === 401 || status === 403 || status === 429 || status >= 500;
+}

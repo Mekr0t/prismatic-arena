@@ -2,6 +2,7 @@ import { query } from '@/lib/db';
 import { iconUrl } from '@/lib/icon-url';
 import type { Breakpoint } from '@/lib/planner/core';
 import { COMPONENT_IDS, ITEM_JUNK, ITEM_NAME_JUNK, isArtifactItem } from './item-filters';
+import { isSetItem } from './set-config';
 import { currentSet } from './static-data';
 
 export interface LibUnit {
@@ -29,6 +30,12 @@ export interface ItemStat {
   value: string;
 }
 
+export interface RecipePart {
+  id: string;
+  name: string;
+  iconUrl: string | null;
+}
+
 export interface LibItem {
   id: string;
   name: string;
@@ -36,6 +43,9 @@ export interface LibItem {
   description: string | null;
   stats: ItemStat[];
   kind: 'component' | 'emblem' | 'craftable' | 'artifact' | 'other';
+  /** The two components this is built from, when it is craftable. Empty
+   *  otherwise — including for the four set-18 emblems that have no recipe. */
+  recipe: RecipePart[];
 }
 
 export type AugmentTier = 'Silver' | 'Gold' | 'Prismatic';
@@ -108,7 +118,15 @@ export async function getLibraryData(): Promise<LibraryData> {
   ]);
 
   const units: LibUnit[] = unitRows
-    .filter((r) => r.cost != null && r.cost >= 1 && r.cost <= 5)
+      // Non-playable entries share the catalog: CDragon lists jungle camps and
+      // training dummies (Krug, Murk Wolf, Rift Herald, Voidspawn, …) as cost-1
+      // "champions". Requiring a trait is what separates a roster from set
+      // dressing — the same rule the loader's roster gate uses — and for set 18
+      // it removes exactly those 11 and leaves all 74 real champions.
+    .filter(
+      (r) =>
+        r.cost != null && r.cost >= 1 && r.cost <= 5 && (r.trait_ids?.length ?? 0) > 0,
+    )
     .map((r) => ({
       id: r.character_id,
       name: r.name,
@@ -136,17 +154,32 @@ export async function getLibraryData(): Promise<LibraryData> {
       })),
   }));
 
-  const setPrefix = `TFT${setNumber}_Item_`;
 
   // rank for preferring which version to keep when names collide
   const kindRank = { component: 0, craftable: 1, emblem: 2, artifact: 3, other: 4 } as const;
+
+  // Component lookup from the RAW rows, before the name dedupe below — a recipe
+  // part must resolve even when its own row lost the dedupe to a same-named one
+  // (set 18 ships DA_Component_BFSword alongside the classic TFT_Item_BFSword).
+  const partById = new Map<string, RecipePart>();
+  for (const r of itemRows) {
+    if (r.item_id && r.name) {
+      partById.set(r.item_id, { id: r.item_id, name: r.name, iconUrl: iconUrl(r.icon_path) });
+    }
+  }
+  const recipeOf = (composition: string[] | null | undefined): RecipePart[] => {
+    if (!Array.isArray(composition) || composition.length !== 2) return [];
+    const parts = composition.map((id) => partById.get(id)).filter((p): p is RecipePart => !!p);
+    // All or nothing: half a recipe is more confusing than none.
+    return parts.length === 2 ? parts : [];
+  };
 
   const itemsByName = new Map<string, LibItem>();
 
   for (const r of itemRows) {
     const id = r.item_id;
     if (!id || !r.name) continue;
-    if (!id.startsWith('TFT_Item_') && !id.startsWith(setPrefix)) continue;
+    if (!isSetItem(setNumber, id)) continue;
     if (ITEM_JUNK.test(id)) continue;
     if (ITEM_NAME_JUNK.test(r.name)) continue;
 
@@ -168,6 +201,7 @@ export async function getLibraryData(): Promise<LibraryData> {
         description: r.description,
         stats: Array.isArray(r.stats) ? r.stats : [],
         kind,
+        recipe: recipeOf(r.composition),
       });
     }
   }

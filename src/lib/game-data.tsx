@@ -4,6 +4,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import type { LibUnit, LibTrait, LibItem, LibraryData } from '@/server/library-data';
 import { RichText, richFirstLine } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
+import { StatLabel } from '@/components/StatIcon';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -464,6 +465,8 @@ function ItemPopup({ item }: { item: LibItem }) {
         </div>
       </div>
 
+      <ItemRecipe recipe={item.recipe} />
+
       {item.stats.length > 0 && <ItemStats stats={item.stats} />}
 
       {item.description && (
@@ -475,12 +478,38 @@ function ItemPopup({ item }: { item: LibItem }) {
   );
 }
 
+// The two components an item builds from, as icons. Rendered from the
+// `composition` CDragon has always shipped and the Library only ever used to
+// CLASSIFY an item as craftable — the recipe itself was never shown.
+//
+// Icons alone: the components are a small, memorised set, and the names were
+// wider than the recipe was worth. The name survives as alt/title, so it is
+// still the accessible name and still available on hover.
+export function ItemRecipe({ recipe }: { recipe: LibItem['recipe'] }) {
+  if (recipe.length !== 2) return null;
+  return (
+    <div className="irecipe">
+      {recipe.map((p, i) => (
+        <span key={`${p.id}-${i}`} className="irecipe-part">
+          {i > 0 && <span className="irecipe-plus">+</span>}
+          {p.iconUrl ? (
+            <img src={p.iconUrl} alt={p.name} title={p.name} className="irecipe-icon" />
+          ) : (
+            // No icon shipped — fall back to the name rather than an empty slot.
+            <span className="irecipe-name">{p.name}</span>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function ItemStats({ stats }: { stats: LibItem['stats'] }) {
   return (
     <div className="istat-list">
       {stats.map((s) => (
         <span key={s.label} className="istat">
-          <b>{s.value}</b> {s.label}
+          <b>{s.value}</b> <StatLabel label={s.label} />
         </span>
       ))}
     </div>

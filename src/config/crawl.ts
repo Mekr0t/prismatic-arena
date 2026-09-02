@@ -29,4 +29,27 @@ export const CRAWL = {
   // ladder crawl stops adding PUUID batches once this is hit. Actual Riot calls
   // land below it, since the existence-check skips matches already stored.
   maxMatchFetchesPerPass: numEnv('CRAWL_MAX_MATCH_FETCHES', 100),
+  // Tier lookups spent per pass on candidates whose tier is UNKNOWN.
+  //
+  // Uncapped, this is where the budget goes. The frontier snowballs from match
+  // participants, so it is ~360 k accounts of which a few hundred are apex; with
+  // an apex-only scope the drain worked through unknown-tier candidates one
+  // league.byPuuid at a time and discarded nearly all of them — measured
+  // 2026-09-02 at 70 league calls/min against 63 match calls/min, i.e. HALF the
+  // key's budget spent proving that low-elo accounts are low-elo. Apex players
+  // are discovered from the apex ladder in step 1 for free, so exploration only
+  // needs to be a trickle, not the whole pass.
+  exploreUnknownPerPass: numEnv('CRAWL_EXPLORE_UNKNOWN', 25),
+  // A tier already resolved OUT of scope is re-checked this rarely. A Gold
+  // player does not reach Master inside the ordinary tier TTL, and re-resolving
+  // them is the same wasted call as above.
+  outOfScopeTtlHours: numEnv('CRAWL_OUT_OF_SCOPE_TTL_HOURS', 720),
+  // Attempts per match-fetch job, and the base delay of its exponential backoff.
+  // match-fetch throws only when EVERY id in the batch failed — an outage or a
+  // dead key, never a bad batch — and its comment has always said "throw so
+  // BullMQ retries", but no attempts option was ever set, so it never did: one
+  // transport blip permanently failed the job. Measured 2026-09-02: 190 of 200
+  // sampled failed jobs were apex batches, the ones that matter most.
+  matchFetchAttempts: numEnv('CRAWL_MATCH_FETCH_ATTEMPTS', 3),
+  matchFetchBackoffMs: numEnv('CRAWL_MATCH_FETCH_BACKOFF_MS', 60_000),
 } as const;

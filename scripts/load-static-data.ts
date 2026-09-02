@@ -1,5 +1,15 @@
 import 'dotenv/config';
 import { Pool } from 'pg';
+// The roster gate lives in its own module so this file and _set-readiness.ts
+// cannot disagree about when a set is loadable (this file self-runs on
+// import, so nothing can import the threshold FROM here).
+import { MIN_REAL_ROSTER, rosterSize, canonicalEntry } from './cdragon-set';
+import { statIconKey } from '@/lib/stat-icons';
+import { keywordFor } from '@/lib/keywords';
+import { emblemGrantDescription, traitNameFromEmblem, EMBLEM_BONUSES } from '@/lib/emblems';
+import { lookupBinField } from '@/lib/bin-hash';
+import { traitValueIcons, traitDescriptionExtra } from '@/server/set-config';
+import type { StatIconKey } from '@/lib/stat-icons';
 
 // Community Dragon serves the canonical TFT catalog whose apiName fields match
 // tft-match-v1 exactly (TFT17_Ezreal, TFT_Item_BlueBuff, TFT17_AssassinTrait).
@@ -140,26 +150,77 @@ function pickCurrentSet(
   data: CDragonData,
   override?: number,
 ): { setNumber: number; champions: CDragonChampion[]; traits: CDragonTrait[]; augmentApiNames: string[]; name?: string } {
-  // Prefer setData (mode-aware, ids match match-v1). Among entries sharing the
-  // highest set number, prefer the canonical "TFTSet{n}" mutator over variants.
+  // Prefer setData (mode-aware, ids match match-v1). Among entries sharing a set
+  // number, prefer the canonical "TFTSet{n}" mutator over mode variants
+  // (TFTSet17_PVEMODE, TFTSet17_PAIRS, TFTSetEvent5YR — all carry near-identical
+  // rosters but different augment pools).
   const candidates = (data.setData ?? []).filter(
     (s) => (s.number ?? 0) > 0 && (s.champions?.length ?? 0) > 0,
   );
+
   if (candidates.length > 0) {
-    const maxNum = override ?? Math.max(...candidates.map((s) => s.number!));
-    const sameNum = candidates.filter((s) => s.number === maxNum);
-    const chosen = sameNum.find((s) => s.mutator === `TFTSet${maxNum}`) ?? sameNum[0];
-    if (chosen) {
+    const numbers = [...new Set(candidates.map((s) => s.number!))].sort((a, b) => b - a);
+    const pickFor = (n: number): CDragonSet | undefined =>
+      canonicalEntry(candidates, n) as CDragonSet | undefined;
+
+    if (override !== undefined) {
+      const chosen = pickFor(override);
+      if (!chosen) throw new Error(`SET_NUMBER=${override} is not present in the data file`);
+      const roster = rosterSize(chosen);
+      if (roster < MIN_REAL_ROSTER && process.env.ALLOW_EMPTY_SET !== '1') {
+        // REFUSE rather than warn. Setting SET_NUMBER to the next set ahead of
+        // launch day is the normal way to prepare for it, so the override says
+        // "use 18 when it is ready", not "load whatever is under 18 today".
+        // Honouring it literally is how 19 jungle camps replaced a live catalog.
+        // Leaving SET_NUMBER=18 in .env and re-running daily is now a fine
+        // workflow: it refuses until Riot publishes, then loads.
+        throw new Error(
+          `SET_NUMBER=${override} is not populated yet — ${roster} rostered champions ` +
+            `(need >= ${MIN_REAL_ROSTER}). CDragon publishes traits, augments and a few ` +
+            `neutral monsters for a set well before its roster lands, and loading that ` +
+            `stub would overwrite the live catalog.
+` +
+            `  — re-run once Riot publishes the roster (nothing else to change), or
+` +
+            `  — set ALLOW_EMPTY_SET=1 to load it anyway.`,
+        );
+      }
       return {
-        setNumber: maxNum,
+        setNumber: override,
         champions: chosen.champions ?? [],
         traits: chosen.traits ?? [],
         augmentApiNames: chosen.augments ?? [],
         name: chosen.name,
       };
     }
+
+    // Newest set whose roster has actually shipped. Anything newer is reported
+    // rather than silently skipped — that line is the cue to re-run on launch day.
+    for (const n of numbers) {
+      const chosen = pickFor(n);
+      if (!chosen) continue;
+      const roster = rosterSize(chosen);
+      if (roster < MIN_REAL_ROSTER) {
+        console.warn(
+          `[data:load] Set ${n} is present but NOT YET POPULATED ` +
+            `(${roster} rostered champions, ${chosen.champions?.length ?? 0} entries total) — skipping. ` +
+            `Re-run once Riot publishes the roster, or force it with SET_NUMBER=${n}.`,
+        );
+        continue;
+      }
+      return {
+        setNumber: n,
+        champions: chosen.champions ?? [],
+        traits: chosen.traits ?? [],
+        augmentApiNames: chosen.augments ?? [],
+        name: chosen.name,
+      };
+    }
+    throw new Error(
+      `No set in the data file has a published roster (>= ${MIN_REAL_ROSTER} champions with traits). ` +
+        `Force one with SET_NUMBER=<n> if this is deliberate.`,
+    );
   }
-  
 
   // Fallback: the `sets` map keyed by set number.
   const sets = data.sets ?? {};
@@ -168,9 +229,9 @@ function pickCurrentSet(
     .filter((n) => !Number.isNaN(n));
   if (keys.length === 0) throw new Error('Could not locate any TFT set in the data file');
   const num = override ?? Math.max(...keys);
-  const s = sets[String(num)];
-  if (!s) throw new Error(`Set ${num} not present in the data file`);
-  return { setNumber: num, champions: s.champions ?? [], traits: s.traits ?? [], augmentApiNames: s.augments ?? [], name: s.name };
+  const s2 = sets[String(num)];
+  if (!s2) throw new Error(`Set ${num} not present in the data file`);
+  return { setNumber: num, champions: s2.champions ?? [], traits: s2.traits ?? [], augmentApiNames: s2.augments ?? [], name: s2.name };
 }
 
 // Splits a trait into its intro (the always-on bonus, → traits.description) and
@@ -178,7 +239,24 @@ function pickCurrentSet(
 // can show each breakpoint's actual effect beside its badge instead of a bare
 // unit count. Rows appear as <row> or <expandRow>; each resolves against its own
 // breakpoint variables.
-function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (string | null)[] } {
+/**
+ * Put a trait's stat glyphs into a value row that does not name its stat.
+ *
+ * Injected into the RAW row before `resolveDesc` runs, because resolveDesc
+ * collapses runs of whitespace — and those runs are precisely the positional
+ * signal: CDragon leaves a double space where the client draws an icon
+ * ("@ADAPGain*100@%  OR"). Fill the gaps in order, append whatever is left.
+ */
+function injectValueIcons(rowHtml: string, groups: readonly (readonly StatIconKey[])[]): string {
+  if (!groups.length) return rowHtml;
+  const render = (g: readonly StatIconKey[]) => g.map((k) => `«icon:${k}»`).join('');
+  let i = 0;
+  let out = rowHtml.replace(/ {2,}/g, () => (i < groups.length ? ` ${render(groups[i++])} ` : ' '));
+  while (i < groups.length) out += ` ${render(groups[i++])}`;
+  return out;
+}
+
+function buildTraitContent(t: CDragonTrait, setNumber: number): { intro: string | null; rowTexts: (string | null)[] } {
   if (!t.desc) return { intro: null, rowTexts: [] };
   const effects = t.effects ?? [];
 
@@ -198,15 +276,23 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
   }
 
   const introHtml = t.desc.split(/<(?:expandRow|row)>/i)[0] ?? '';
-  const intro = resolveDesc(introHtml, introEffMap);
+  const resolvedIntro = resolveDesc(introHtml, introEffMap);
+  // Content CDragon describes the mechanic for but never lists (Primal's four
+  // Blessings). Appended AFTER resolution so it is never scanned for @Var@
+  // placeholders it does not have.
+  const extra = traitDescriptionExtra(setNumber, t.apiName ?? '');
+  const intro = extra
+    ? [resolvedIntro, extra].filter(Boolean).join('\n\n')
+    : resolvedIntro;
 
   // One <row> per breakpoint (Meeple, Challenger) maps by index; a single
   // <expandRow> (Conduit) is a TEMPLATE repeated for every breakpoint, resolved
   // with each breakpoint's own variables. Build one effect string per breakpoint.
   const template = rows.length === 1 && effects.length > 1 ? rows[0] : null;
   const rowTexts = effects.map((e, i) => {
-    const rowHtml = template ?? rows[i];
-    if (rowHtml == null) return null;
+    const rawRow = template ?? rows[i];
+    if (rawRow == null) return null;
+    const rowHtml = injectValueIcons(rawRow, traitValueIcons(setNumber, t.apiName ?? ''));
     const effMap: Record<string, number> = {};
     if (typeof e.minUnits === 'number') effMap.MinUnits = e.minUnits;
     const vars = e.variables ?? {};
@@ -218,41 +304,6 @@ function buildTraitContent(t: CDragonTrait): { intro: string | null; rowTexts: (
   });
 
   return { intro, rowTexts };
-}
-
-// Breakpoint metadata fields — not variable values.
-const TRAIT_META = new Set(['minUnits', 'maxUnits', 'style', 'min', 'max']);
-
-// Builds a per-variable range string from all breakpoint levels, e.g. { Damage: "15/25/40" }.
-function buildTraitEffectsMap(effects: CDragonTraitEffect[]): Record<string, string> {
-  const byVar = new Map<string, number[]>();
-
-  for (const e of effects) {
-    // Expose MinUnits/MaxUnits so @MinUnits@ resolves in desc
-    if (typeof e.minUnits === 'number') {
-      const arr = byVar.get('MinUnits') ?? [];
-      arr.push(e.minUnits);
-      byVar.set('MinUnits', arr);
-    }
-
-    // Values nested under variables
-    const vars = e.variables ?? {};
-    for (const [k, v] of Object.entries(vars)) {
-      if (typeof v !== 'number') continue;
-      const arr = byVar.get(k) ?? [];
-      arr.push(v);
-      byVar.set(k, arr);
-    }
-  }
-
-  const out: Record<string, string> = {};
-  for (const [k, vals] of byVar) {
-    const unique = [...new Set(vals)];
-    out[k] = unique
-      .map((v) => (v === Math.floor(v) ? String(Math.floor(v)) : v.toFixed(1)))
-      .join('/');
-  }
-  return out;
 }
 
 // Builds effects map from champion ability variables.
@@ -309,26 +360,25 @@ const RICH_TAG_CLASS: Record<string, string> = {
 };
 
 // CDragon embeds stat icons as %i:Name% next to a value to say WHAT the value is
-// / scales with. We can't render the icon, so map it to a short label emitted as
-// a «scale:LABEL» token — rendered muted (see .rt-scale), so it reads as a
-// secondary hint (Challenger "15% AS", Nami "… (AP)") rather than being mistaken
-// for a damage value in a coloured span. Unknown icons are dropped.
-const ICON_LABEL: Record<string, string> = {
-  scalead: 'AD',
-  tftbasead: 'AD',
-  scaleap: 'AP',
-  scaleas: 'AS',
-  scalehealth: 'HP',
-  scalearmor: 'Armor',
-  scalemr: 'MR',
-  scalerange: 'Range',
-  scaleda: 'Damage Amp',
-  scalesv: 'Omnivamp',
-  scaledr: 'Damage Reduction',
-  scalehpregen: 'HP Regen',
-  tftmanaregen: 'Mana Regen',
+// / scales with. These now resolve to the REAL game glyph: `statIconKey` maps the
+// CDragon name to an atlas entry (src/lib/stat-icons.ts) and we emit «icon:key»,
+// which rich-text.tsx draws. Previously this emitted a «scale:AP» text label
+// purely because we could not draw the icon.
+//
+// Names with no glyph keep a muted text label — better a word than nothing.
+const ICON_TEXT_FALLBACK: Record<string, string> = {
   set14ampicon: 'Meeps', // reused icon asset; only Meeple uses it (the Meep count)
 };
+
+// Keyword references we could not resolve, reported once at the end of the load
+// rather than per occurrence — 16 items reference Precision alone, and a warning
+// per row would bury the signal it exists to give.
+const unresolvedKeywords = new Set<string>();
+
+// Variable names that resolved neither by name nor by hash — i.e. the value is
+// genuinely not published. Reported once at the end so the size of the gap is
+// visible rather than silently rendering as a missing number mid-sentence.
+const unresolvedVars = new Set<string>();
 
 function resolveDesc(
   desc: string | null | undefined,
@@ -344,10 +394,15 @@ function resolveDesc(
     const varKey = multMatch ? multMatch[1] : raw;
     const multiplier = multMatch ? parseFloat(multMatch[2]) : 1.0;
 
-    const entry = Object.entries(eff).find(([k]) => k.toLowerCase() === varKey.toLowerCase());
-    if (!entry) return ''; // unresolvable (obfuscated key, Modified*, etc.) — hide rather than show raw name
+    // Direct name first, then the FNV-1a hash CDragon publishes when it cannot
+    // reverse a field name (see lib/bin-hash.ts). Set 18 keys most trait
+    // variables that way, which is why its breakpoints lost their numbers.
+    const val = lookupBinField(eff, varKey);
+    if (val === undefined) {
+      unresolvedVars.add(varKey);
+      return ''; // genuinely absent — hide rather than show the raw name
+    }
 
-    const val = entry[1];
     if (typeof val === 'string') {
       // Ability values are stored as full-precision strings (possibly "41/62/644" for multi-star).
       // Apply the multiplier here, since buildAbilityEffectsMap stores raw values.
@@ -362,7 +417,13 @@ function resolveDesc(
         return sig === Math.floor(sig) ? String(Math.floor(sig)) : String(sig);
       }).join('/');
     }
-    const result = val * multiplier;
+    // Riot stores these as 32-bit floats, so a clean decimal arrives widened and
+    // slightly wrong: Adaptor's 35% is published as 0.3499999940395355, which
+    // ×100 is not an integer and rendered "35.0%" between a "25%" and a "50%".
+    // Six significant figures is past float32's ~7-digit precision, so it
+    // recovers the intended value while leaving genuine fractions alone —
+    // 33.333… still formats as 33.3, and large values keep their magnitude.
+    const result = parseFloat((val * multiplier).toPrecision(6));
     return result === Math.floor(result) ? String(Math.floor(result)) : result.toFixed(1);
   });
 
@@ -394,10 +455,27 @@ function resolveDesc(
   let text = out
     .replace(/<[^>]+>/g, '')             // unwrap unknown/structural tags (maintext, showif, li, …)
     .replace(/%i:([^%]+)%/g, (_m, name: string) => {
-      const label = ICON_LABEL[String(name).toLowerCase()];
+      const key = statIconKey(String(name));
+      if (key) return `«icon:${key}»`;
+      const label = ICON_TEXT_FALLBACK[String(name).toLowerCase()];
       return label ? `«scale:${label}»` : '';
     })
-    .replace(/\{\{[^}]+\}\}/g, '')
+    // `{{TFT_Keyword_X}}` is a reference to a definition that lives in the game
+    // client rather than the published data. Dropping it wholesale is why
+    // Jeweled Gauntlet read "Gain Precision." and stopped, while Morellonomicon
+    // — which inlines its own rules block — explained Burn and Wound. Resolve
+    // the ones we know into the SAME shape CDragon uses for an inline block, so
+    // both paths render identically.
+    .replace(/\{\{([^}]+)\}\}/g, (_m, ref: string) => {
+      const kw = keywordFor(ref.trim());
+      if (kw) return `«rules:«bold:${kw.name}»: ${kw.text}»`;
+      // Not a keyword (item-specific template refs like TFT13_ChemBaronOnlyItem
+      // also use this syntax), or a keyword we have no definition for. Record
+      // the latter so a new one surfaces at load time instead of silently
+      // becoming a sentence that references something never explained.
+      if (/^TFT_Keyword_/i.test(ref.trim())) unresolvedKeywords.add(ref.trim());
+      return '';
+    })
     .replace(/\[\[[^\]]+\]\]/g, '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/(?<!\d)%/g, '')            // stray % from unresolvable vars (keeps "244%")
@@ -413,6 +491,13 @@ function resolveDesc(
   } while (text !== prevEmpty);
 
   text = text
+    // CDragon ships some set-18 abilities with the ESCAPE SEQUENCE written out
+    // as text — the characters backslash-r backslash-n rather than the control
+    // characters — so 49 descriptions rendered a visible "\n" mid-sentence
+    // instead of breaking the line. Convert those first, then normalise real
+    // CR/CRLF, so both spellings end up as one newline.
+    .replace(/\\r\\n|\\n|\\r/g, '\n')
+    .replace(/\r\n?/g, '\n')
     .replace(/\s+\)/g, ')')             // fix " )" → ")"
     .replace(/\(\s+/g, '(')             // fix "( " → "("
     .replace(/[ \t]{2,}/g, ' ')          // collapse double spaces (keep newlines)
@@ -444,7 +529,9 @@ async function main(): Promise<void> {
     data = (await res.json()) as CDragonData;
   }
 
-  const { setNumber, champions, traits, augmentApiNames, name } = pickCurrentSet(data, overrideSet);
+  const picked = pickCurrentSet(data, overrideSet);
+  const { setNumber, traits, augmentApiNames, name } = picked;
+  const champions = picked.champions;
   console.log(
     `Set ${setNumber}${name ? ` (${name})` : ''}: ${champions.length} champions, ${traits.length} traits`,
   );
@@ -486,7 +573,7 @@ async function main(): Promise<void> {
 
     for (const t of traits) {
       if (!t.apiName || !t.name) continue;
-      const { intro, rowTexts } = buildTraitContent(t);
+      const { intro, rowTexts } = buildTraitContent(t, setNumber);
       const breakpoints = (t.effects ?? []).map((e, i) => ({
         minUnits: e.minUnits ?? e.min ?? null,
         maxUnits: e.maxUnits ?? e.max ?? null,
@@ -526,8 +613,33 @@ async function main(): Promise<void> {
       );
     }
 
+    // Display names of THIS set's traits, for the emblem fallback below.
+    const liveTraitNames = new Set(
+      traits.map((t) => (t.name ?? '').trim().toLowerCase()).filter(Boolean),
+    );
+    let emblemsFilledIn = 0;
+    // Every emblem key this set actually has, so a mistyped EMBLEM_BONUSES key
+    // can be reported. An unrecognised key is otherwise SILENT — it simply never
+    // matches, and the emblem quietly renders with the grant line alone, which
+    // is exactly how "spirkin" and "ravanger" sat there doing nothing.
+    const emblemKeysInSet = new Set<string>();
+
     for (const it of items) {
       const stats = itemStats(it.effects);
+      // CDragon's own text always wins; the fallback only fills a hole. That
+      // way the day Riot publishes set-18 emblem descriptions, they take over
+      // with no code change and nothing to remove.
+      const emblemKey = traitNameFromEmblem(it.name)?.toLowerCase();
+      if (emblemKey && liveTraitNames.has(emblemKey)) emblemKeysInSet.add(emblemKey);
+
+      let description = resolveDesc(it.desc, it.effects);
+      if (!description) {
+        const fallback = emblemGrantDescription(it.name, liveTraitNames);
+        if (fallback) {
+          description = fallback;
+          emblemsFilledIn++;
+        }
+      }
       await client.query(
         `INSERT INTO items (set_number, item_id, name, icon_path, composition, description, stats)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -537,8 +649,27 @@ async function main(): Promise<void> {
                stats = EXCLUDED.stats`,
         [
           setNumber, it.apiName, it.name, it.icon ?? null, it.composition ?? [],
-          resolveDesc(it.desc, it.effects), JSON.stringify(stats),
+          description, JSON.stringify(stats),
         ],
+      );
+    }
+    const strayBonuses = Object.keys(EMBLEM_BONUSES).filter((k) => !emblemKeysInSet.has(k));
+    if (strayBonuses.length) {
+      console.warn(
+        `[data:load] ${strayBonuses.length} EMBLEM_BONUSES key(s) match no emblem in set ` +
+          `${setNumber} and had no effect: ${strayBonuses.join(', ')}
+` +
+          `  Check the spelling against the trait's DISPLAY name — the key is that ` +
+          `name lowercased (e.g. "Ravager Emblem" -> ravager, even though its id ` +
+          `says Slayer).`,
+      );
+    }
+    if (emblemsFilledIn) {
+      console.log(
+        `[data:load] ${emblemsFilledIn} emblem(s) had no published description; ` +
+          `filled in the trait grant, plus a transcribed bonus where one is known ` +
+          `(src/lib/emblems.ts). Bonuses are never guessed — an emblem with no ` +
+          `entry gets the grant line alone.`,
       );
     }
 
@@ -568,6 +699,25 @@ async function main(): Promise<void> {
   for (const c of champions.slice(0, 3)) {
     const traitApis = (c.traits ?? []).map((n) => traitNameToApi.get(n) ?? n);
     console.log(`  ${c.apiName} -> ${c.name} (cost ${c.cost}) traits=[${traitApis.join(', ')}]`);
+  }
+  if (unresolvedVars.size) {
+    const shown = [...unresolvedVars].slice(0, 12);
+    console.warn(
+      `[data:load] ${unresolvedVars.size} variable name(s) had no published value ` +
+        `and rendered as a gap: ${shown.join(', ')}${unresolvedVars.size > shown.length ? ', …' : ''}
+` +
+        `  These resolved neither by name nor by CDragon's {hash} key, so the ` +
+        `number is absent upstream rather than mismatched here.`,
+    );
+  }
+  if (unresolvedKeywords.size) {
+    console.warn(
+      `[data:load] ${unresolvedKeywords.size} keyword reference(s) have no definition ` +
+        `and were dropped: ${[...unresolvedKeywords].join(', ')}
+` +
+        `  Add them to src/lib/keywords.ts — the text they reference lives in the ` +
+        `client, so the sentence citing them reads as a dead end without it.`,
+    );
   }
   console.log('Static data loaded.');
 }

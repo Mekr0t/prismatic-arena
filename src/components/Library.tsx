@@ -4,10 +4,31 @@ import { useState, useMemo, useCallback } from 'react';
 import type { LibraryData, LibUnit, LibTrait, LibItem, LibAugment, AugmentTier } from '@/server/library-data';
 import { RichText } from '@/lib/rich-text';
 import { UnitStatsGrid } from '@/components/UnitStatsGrid';
+import { StatLabel } from './StatIcon';
+import { ItemRecipe } from '@/lib/game-data';
 
 type Tab = 'units' | 'traits' | 'items' | 'augments';
 
 const BP_STYLE_NAME = ['', 'Bronze', 'Silver', 'Gold', 'Prismatic'];
+
+/**
+ * Whether a trait's breakpoint list is worth showing.
+ *
+ * A one-of-one trait (Avatar, Old Growth, Greenfather, …) has a single
+ * breakpoint that carries no text, so the block renders as a lone "1 Unique"
+ * badge under a description that already said everything. That is noise, and
+ * the game does not show it either.
+ *
+ * Also drops a single breakpoint whose text merely REPEATS the description —
+ * set 18's Solar publishes the same paragraph as both, so it appeared twice.
+ */
+function showBreakpoints(t: LibTrait): boolean {
+  if (t.breakpoints.length === 0) return false;
+  if (t.breakpoints.length > 1) return true;
+  const only = t.breakpoints[0];
+  if (!only.effect?.trim()) return false;
+  return only.effect.trim() !== (t.description ?? '').trim();
+}
 
 const ROLE_LABEL: Record<string, string> = {
   APCaster:     'AP Caster',
@@ -322,14 +343,16 @@ export default function Library({ data }: { data: LibraryData }) {
                     <div className="lib-detail-name">{t.name}</div>
                   </div>
                   <RichText text={t.description} className="lib-desc rt" />
-                  {t.breakpoints.length > 0 && (
+                  {showBreakpoints(t) && (
                     <div className="lib-section">
                       <div className="lib-section-label">Breakpoints</div>
                       <div className="bp-list">
-                        {t.breakpoints.map((bp) => {
+                        {t.breakpoints.map((bp, i) => {
                           const isUnique = t.breakpoints.length === 1;
                           return (
-                            <div key={bp.minUnits} className="bp-row">
+                            // minUnits is NOT unique — set 18's Rival publishes
+                            // two effects at 1, which collided as a React key.
+                            <div key={`${bp.minUnits}-${i}`} className="bp-row">
                               <span className={`lib-bp-badge ${isUnique ? 'unique' : `s${bp.style}`}`}>
                                 {bp.minUnits}
                               </span>
@@ -364,11 +387,12 @@ export default function Library({ data }: { data: LibraryData }) {
                       <span className={`lib-kind-badge kind-${it.kind}`}>{it.kind}</span>
                     </div>
                   </div>
+                  <ItemRecipe recipe={it.recipe} />
                   {it.stats.length > 0 && (
                     <div className="istat-list">
                       {it.stats.map((s) => (
                         <span key={s.label} className="istat">
-                          <b>{s.value}</b> {s.label}
+                          <b>{s.value}</b> <StatLabel label={s.label} />
                         </span>
                       ))}
                     </div>
