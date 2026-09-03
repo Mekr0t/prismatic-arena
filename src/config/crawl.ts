@@ -9,9 +9,36 @@ function numEnv(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// Platforms to seed from, in order. CRAWL_PLATFORMS (comma-separated) wins;
+// CRAWL_PLATFORM stays supported as the single-platform form it always was.
+//
+// WHY MORE THAN ONE. The constraint on apex sample is not the API budget, it is
+// how many apex accounts exist to drain. Measured 2026-09-02, EUW alone holds
+// 146 Master entries; the crawl bursts through them in a couple of passes and
+// then idles until the re-crawl window lapses. Adding the rest of EMEA (eun1 21,
+// tr1 18, ru 5, me1 0) takes the pool to ~190 — a 30 % widening, not a
+// multiplier, and worth knowing which it is.
+//
+// IT DOES NOT RAISE THE CEILING. Every European platform routes to the SAME
+// `europe` host for TFT-MATCH-V1, and the rate limiter keys on that route, so
+// match fetches across EUW, EUNE, TR, RU and ME share one budget. What does
+// scale is TFT-LEAGUE-V1, which is per-platform — so the rank gate's lookups no
+// longer queue behind each other.
+function platformList(): string[] {
+  const many = process.env.CRAWL_PLATFORMS;
+  if (many) {
+    const parsed = many.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);
+    if (parsed.length > 0) return parsed;
+  }
+  return [process.env.CRAWL_PLATFORM ?? 'euw1'];
+}
+
 export const CRAWL = {
-  // Seed platform (regional route is derived from it).
-  platform: process.env.CRAWL_PLATFORM ?? 'euw1',
+  // First configured platform. Kept because several callers want "the" platform
+  // for a single-shot run; the crawl itself iterates `platforms`.
+  platform: platformList()[0],
+  /** Every platform the crawl seeds from. Regional routes are derived per platform. */
+  platforms: platformList(),
   // Apex tiers to seed from. Widen to e.g. 'challenger,grandmaster,master',
   // then ladder tiers, as the production key allows.
   tiers: (process.env.CRAWL_TIERS ?? 'challenger')

@@ -230,12 +230,18 @@ if (process.env.RUN_SCHEDULER === '1') {
 // run idle as a consumer. Run one pass with: RUN_CRAWL=1 npm run worker
 if (process.env.RUN_CRAWL === '1') {
   const q = makeQueue(QUEUE.ladderCrawl);
-  q.add('crawl', { platform: CRAWL.platform } satisfies LadderCrawlJob, {
-    jobId: 'boot-crawl',
-    removeOnComplete: true,
-  })
+  // One pass per configured platform. The jobId carries the platform, or the
+  // second add() would collide with the first and silently crawl only one.
+  Promise.all(
+    CRAWL.platforms.map((platform) =>
+      q.add('crawl', { platform } satisfies LadderCrawlJob, {
+        jobId: `boot-crawl:${platform}`,
+        removeOnComplete: true,
+      }),
+    ),
+  )
     .then(() => q.close())
-    .then(() => console.log(`[worker] enqueued a ladder-crawl pass for ${CRAWL.platform}`))
+    .then(() => console.log(`[worker] enqueued a ladder-crawl pass for ${CRAWL.platforms.join(', ')}`))
     .catch((e) => console.error('[worker] crawl enqueue failed:', e));
 }
 

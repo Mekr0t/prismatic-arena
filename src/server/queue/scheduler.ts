@@ -69,16 +69,33 @@ export async function registerSchedules(): Promise<void> {
   const headQ = makeQueue(CHAIN_HEAD);
   const legacyQs = LEGACY.map((l) => ({ ...l, q: makeQueue(l.queue) }));
   try {
-    await crawlQ.upsertJobScheduler(
-      SCHED_ID.crawl,
-      { every: SCHEDULE.crawlMin * MIN_MS },
-      { name: 'crawl', data: { platform: CRAWL.platform } satisfies LadderCrawlJob },
-    );
+    // ONE SCHEDULER PER PLATFORM. A single job carrying a list would serialise
+    // every platform behind one ladder-crawl lock and one shared fetch budget;
+    // separate schedulers let each platform's own TFT-LEAGUE-V1 limiter work in
+    // parallel, which is the half of the crawl that actually scales per platform
+    // (match fetches share their regional route's budget either way).
+    for (const platform of CRAWL.platforms) {
+      await crawlQ.upsertJobScheduler(
+        `${SCHED_ID.crawl}:${platform}`,
+        { every: SCHEDULE.crawlMin * MIN_MS },
+        { name: 'crawl', data: { platform } satisfies LadderCrawlJob },
+      );
+    }
     await headQ.upsertJobScheduler(
       SCHED_ID.pipeline,
       { every: SCHEDULE.pipelineMin * MIN_MS },
       { name: 'cluster', data: {} satisfies ClusterJob },
     );
+
+    // The crawl scheduler used to be a single un-suffixed id. Left in Redis it
+    // would keep enqueuing the old one-platform job forever alongside the new
+    // per-platform ones — the same orphan-repeatable trap the LEGACY list below
+    // exists for.
+    try {
+      await crawlQ.removeJobScheduler(SCHED_ID.crawl);
+    } catch {
+      // Never registered on this install — nothing to remove.
+    }
 
     // Remove any schedulers left over from the pre-chain layout.
     for (const { q, id } of legacyQs) {
@@ -90,7 +107,7 @@ export async function registerSchedules(): Promise<void> {
     }
 
     console.log(
-      `[scheduler] registered — crawl ${SCHEDULE.crawlMin}m · ` +
+      `[scheduler] registered — crawl ${SCHEDULE.crawlMin}m on ${CRAWL.platforms.join(', ')} · ` +
         `pipeline ${SCHEDULE.pipelineMin}m (cluster → rollup → merge → trend-tier)`,
     );
   } finally {
@@ -100,8 +117,12 @@ export async function registerSchedules(): Promise<void> {
 
 /** Remove every schedule, current and legacy (the workers then sit idle as consumers). */
 export async function clearSchedules(): Promise<void> {
+  const crawlQueue = makeQueue(QUEUE.ladderCrawl);
   const entries = [
-    { q: makeQueue(QUEUE.ladderCrawl), id: SCHED_ID.crawl },
+    // Both shapes: the per-platform ids in use now, and the single id they
+    // replaced, so clearing an upgraded install really does leave it idle.
+    { q: crawlQueue, id: SCHED_ID.crawl },
+    ...CRAWL.platforms.map((platform) => ({ q: crawlQueue, id: `${SCHED_ID.crawl}:${platform}` })),
     { q: makeQueue(CHAIN_HEAD), id: SCHED_ID.pipeline },
     ...LEGACY.map((l) => ({ q: makeQueue(l.queue), id: l.id })),
   ];
@@ -115,6 +136,7 @@ export async function clearSchedules(): Promise<void> {
     }
     console.log('[scheduler] cleared all schedules (including legacy per-stage ones)');
   } finally {
-    await Promise.all(entries.map(({ q }) => q.close()));
+    // Several entries share the crawl queue instance; close each ONCE.
+    await Promise.all([...new Set(entries.map(({ q }) => q))].map((q) => q.close()));
   }
 }
