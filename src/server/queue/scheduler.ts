@@ -45,6 +45,19 @@ const SCHEDULE = {
 
 const MIN_MS = 60_000;
 
+// Retention for the REPEATABLE jobs. They set none before, so both their
+// completed and their failed sets grew without limit — five platforms every five
+// minutes is 60 crawl jobs an hour, and a bug that throws on every pass banks
+// them forever: a single afternoon's make_interval fault left 124 dead
+// ladder-crawl jobs that nothing would ever have cleared. A COUNT rather than
+// `true`, because the recent failures are the diagnostic and only the old ones
+// are litter — which is the same choice the per-PUUID match-fetch jobs already
+// made with removeOnFail: { count: 500 }.
+const RETAIN = {
+  removeOnComplete: { count: 50 },
+  removeOnFail: { count: 50 },
+} as const;
+
 // Stable scheduler ids — re-running upsert updates the cadence in place rather
 // than creating a duplicate schedule.
 const SCHED_ID = {
@@ -78,13 +91,13 @@ export async function registerSchedules(): Promise<void> {
       await crawlQ.upsertJobScheduler(
         `${SCHED_ID.crawl}:${platform}`,
         { every: SCHEDULE.crawlMin * MIN_MS },
-        { name: 'crawl', data: { platform } satisfies LadderCrawlJob },
+        { name: 'crawl', data: { platform } satisfies LadderCrawlJob, opts: RETAIN },
       );
     }
     await headQ.upsertJobScheduler(
       SCHED_ID.pipeline,
       { every: SCHEDULE.pipelineMin * MIN_MS },
-      { name: 'cluster', data: {} satisfies ClusterJob },
+      { name: 'cluster', data: {} satisfies ClusterJob, opts: RETAIN },
     );
 
     // The crawl scheduler used to be a single un-suffixed id. Left in Redis it
