@@ -4,6 +4,7 @@
 // needs no client JS and this stays a pure server component.
 
 import { loadArchetypeInspector } from '@/server/comp-inspector';
+import { currentSet } from '@/server/static-data';
 
 // Always read live merge output; never serve a cached snapshot for a debug view.
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,11 @@ const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 const place = (x: number) => x.toFixed(2);
 
 export default async function ArchetypeInspectorPage() {
-  const { setNumber, archetypes } = await loadArchetypeInspector();
+  // Scoped to the LIVE set. Unscoped, this lists every set that has labels —
+  // 61 set-17 archetypes interleaved with 33 set-18 ones, set 17 outnumbering
+  // the set you are looking at nearly 2:1, with nothing on the row saying which
+  // is which. The data was never stale; the scope was missing.
+  const { setNumber, archetypes } = await loadArchetypeInspector(await currentSet());
   const totalMembers = archetypes.reduce((s, a) => s + a.memberCount, 0);
 
   return (

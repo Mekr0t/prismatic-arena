@@ -21,6 +21,9 @@ export default async function AdminPanelLayout({
           <Link href="/admin">Pipeline health</Link>
         </nav>
         <nav className="admin-bar-nav">
+          <Link href="/admin/crawl">Crawl health</Link>
+        </nav>
+        <nav className="admin-bar-nav">
           <Link href="/admin/inspector">Inspector</Link>
         </nav>
         <div className="admin-bar-right">
