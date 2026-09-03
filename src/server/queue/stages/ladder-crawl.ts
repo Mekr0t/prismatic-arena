@@ -144,6 +144,13 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
     // frontier still gets explored; already-checked out-of-scope players sort
     // last and fall off the LIMIT.
     const scopeUpper = CRAWL.tiers.map((t) => t.toUpperCase());
+    // The explore cap exists because a tier lookup on a candidate that turns out
+    // to be OUT of scope is a wasted call. Under an open scope none is wasted —
+    // the player gets crawled whatever the tier says, and the lookup is what
+    // buckets their boards — so the cap must not apply, or a widened scope would
+    // silently throttle itself to a handful of new players per pass while the
+    // frontier it is meant to be draining sits untouched.
+    const openScope = CRAWL.tiers.some((t) => t.toLowerCase() === 'all');
     // EVERY ::int HERE IS LOAD-BEARING. node-postgres sends parameters with no
     // type OID, and make_interval's named arguments are overloaded, so inside a
     // CASE Postgres cannot resolve the branches and falls back to text:
@@ -206,7 +213,9 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
         // NOT mark the candidate crawled: it was never examined, so it stays at
         // the front of the frontier for the next pass instead of being burned
         // for the re-crawl window.
-        if (seed.tier === null && unknownLookups >= CRAWL.exploreUnknownPerPass) continue;
+        if (!openScope && seed.tier === null && unknownLookups >= CRAWL.exploreUnknownPerPass) {
+          continue;
+        }
         try {
           const entries = await riot.league.byPuuid(platform, puuid, Priority.BATCH);
           tier = entries.find((e) => e.queueType === RANKED_TFT)?.tier ?? null;
@@ -334,7 +343,7 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
 
     console.log(
       `[ladder-crawl] frontier drain — ${seeds.length} candidates, enqueued ${enqueued}, ` +
-        `tier lookups ${tierLookups} (${unknownLookups} exploratory), ` +
+        `tier lookups ${tierLookups} (${unknownLookups} exploratory${openScope ? ', uncapped: open scope' : ''}), ` +
         `out-of-scope skipped ${skippedOutOfScope}, budget left ${fetchBudget}`,
     );
   } finally {
