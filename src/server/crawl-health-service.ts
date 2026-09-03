@@ -60,7 +60,15 @@ export interface ScopeCheck {
   ok: boolean;
 }
 export interface CrawlHealth {
-  scope: { tiers: string[]; platforms: string[]; recrawlHours: number; buckets: string[] | null };
+  scope: {
+    tiers: string[];
+    platforms: string[];
+    recrawlHours: number;
+    /** Null when the scope admits every bucket, i.e. there is no gate to enforce. */
+    buckets: string[] | null;
+    /** True for `CRAWL_TIERS=all` — no tier gate at all. */
+    open: boolean;
+  };
   apex: ApexTierRow[];
   apexTotal: number;
   apexDrainable: number;
@@ -74,6 +82,11 @@ export interface CrawlHealth {
   boardsPerHour: number;
   tierCoverage: { boards: number; withTier: number };
   scopeChecks: ScopeCheck[];
+  /** Last successful ladder-crawl pass, ISO — the direct measure of whether the
+   *  producer is producing. */
+  lastCrawlSuccess: string | null;
+  /** Minutes since that success, or null if there has never been one. */
+  crawlStaleMinutes: number | null;
 }
 
 const envInt = (key: string, fallback: number): number => {
@@ -126,29 +139,55 @@ export async function getCrawlHealth(): Promise<CrawlHealth> {
   const scopeUpper = CRAWL.tiers.map((t) => t.toUpperCase());
   const buckets = inScopeBuckets(CRAWL.tiers);
 
-  const [apexRows, nextRow, flowBuckets, flowPlatforms, coverage, statScopes, rawScopes, queueInfo] =
+  // CRAWL_TIERS carries two tokens that are NOT tier names — `all` (no gate) and
+  // `unranked` (candidates with no resolved tier). Matching the raw list against
+  // `accounts.tier` therefore reports ZERO seeds under an open scope, because no
+  // account has a tier called "ALL", and the panel then claims the crawl has
+  // nothing to drain while it is visibly draining. The predicate here has to
+  // mirror tierInScope, not the literal list.
+  const openScope = CRAWL.tiers.some((t) => t.toLowerCase() === 'all');
+  const unrankedInScope = openScope || CRAWL.tiers.some((t) => t.toLowerCase() === 'unranked');
+  // An unresolved tier is a real state, not a missing value: under an open scope
+  // those accounts are crawled and their boards bucket as 'unknown'.
+  //
+  // The predicate and its parameters are built TOGETHER, and the recrawl window
+  // is $1 so the numbering never has a gap. A parameter that the final SQL does
+  // not reference has no inferrable type and Postgres rejects the statement with
+  // "could not determine data type of parameter $1" — the same trap that took
+  // down every ladder-crawl pass earlier today, and it fires just as silently
+  // here because the page renders the error as an empty panel.
+  const seedParams: unknown[] = [recrawlHours];
+  let seedWhere = 'TRUE';
+  if (!openScope) {
+    seedParams.push(scopeUpper);
+    seedWhere = `((tier IS NOT NULL AND upper(tier) = ANY($${seedParams.length}::text[]))${
+      unrankedInScope ? ' OR tier IS NULL' : ''
+    })`;
+  }
+
+  const [apexRows, nextRow, flowBuckets, flowPlatforms, coverage, statScopes, rawScopes, queueInfo, crawlRow] =
     await Promise.all([
       // SUPPLY. Only the tiers the crawl is configured for — an apex-only scope
       // that lists Gold accounts is answering the wrong question.
       query<{ tier: string; accounts: number; drainable: number }>(
-        `SELECT upper(tier) AS tier,
+        `SELECT COALESCE(upper(tier), '(unresolved)') AS tier,
                 COUNT(*)::int AS accounts,
                 COUNT(*) FILTER (
                   WHERE last_crawled_at IS NULL
-                     OR last_crawled_at < now() - make_interval(hours => $2::int)
+                     OR last_crawled_at < now() - make_interval(hours => $1::int)
                 )::int AS drainable
            FROM accounts
-          WHERE tier IS NOT NULL AND upper(tier) = ANY($1::text[])
+          WHERE ${seedWhere}
           GROUP BY 1 ORDER BY 2 DESC`,
-        [scopeUpper, recrawlHours],
+        seedParams,
       ),
       query<{ next: string | null }>(
-        `SELECT MIN(last_crawled_at + make_interval(hours => $2::int))::text AS next
+        `SELECT MIN(last_crawled_at + make_interval(hours => $1::int))::text AS next
            FROM accounts
-          WHERE tier IS NOT NULL AND upper(tier) = ANY($1::text[])
+          WHERE ${seedWhere}
             AND last_crawled_at IS NOT NULL
-            AND last_crawled_at >= now() - make_interval(hours => $2::int)`,
-        [scopeUpper, recrawlHours],
+            AND last_crawled_at >= now() - make_interval(hours => $1::int)`,
+        seedParams,
       ),
       // FLOW, by rank bucket.
       query<{ bucket: string; boards: number; newest: string | null }>(
@@ -192,6 +231,17 @@ export async function getCrawlHealth(): Promise<CrawlHealth> {
         [RANKED_TFT_QUEUE_ID],
       ),
       readQueues(),
+      // The PRODUCER's own heartbeat. An earlier version inferred "the crawl has
+      // stopped" from drainable-seeds-plus-an-empty-queue, which reads correctly
+      // under an apex scope (a few hundred seeds, so an empty queue means nobody
+      // enqueued) and is nonsense under an open one (~390 k seeds are always
+      // drainable, and the drain only enqueues ~14 a pass by design, so the
+      // heuristic would cry wolf on every quiet minute). Ask the question
+      // directly instead.
+      query<{ last: string | null }>(
+        `SELECT MAX(finished_at)::text AS last
+           FROM ingestion_jobs WHERE job_type = 'ladder-crawl' AND status = 'success'`,
+      ),
     ]);
 
   // Fold raw platform rows into the region the read path would ask for, then
@@ -230,6 +280,7 @@ export async function getCrawlHealth(): Promise<CrawlHealth> {
       platforms: CRAWL.platforms,
       recrawlHours,
       buckets: buckets ? [...buckets] : null,
+      open: openScope,
     },
     apex,
     apexTotal: apex.reduce((a, r) => a + r.accounts, 0),
@@ -247,5 +298,9 @@ export async function getCrawlHealth(): Promise<CrawlHealth> {
     boardsPerHour: Math.round((byBucketBoards / FLOW_MINUTES) * 60),
     tierCoverage: { boards: coverage[0]?.boards ?? 0, withTier: coverage[0]?.with_tier ?? 0 },
     scopeChecks,
+    lastCrawlSuccess: crawlRow[0]?.last ?? null,
+    crawlStaleMinutes: crawlRow[0]?.last
+      ? Math.round((Date.now() - new Date(crawlRow[0].last).getTime()) / 60000)
+      : null,
   };
 }

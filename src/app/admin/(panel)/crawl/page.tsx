@@ -33,11 +33,11 @@ const until = (iso: string | null): string => {
 export default async function CrawlHealthPage() {
   const h = await getCrawlHealth();
 
-  // SEED-STARVED is the state that looked like "slow" for hours: eligible seeds
-  // sitting unused while the queue drains to nothing. Either half alone is
-  // normal; together they mean the producer is not producing.
-  const matchFetch = h.queues.find((q) => q.name === 'match-fetch');
-  const seedStarved = h.apexDrainable > 0 && (matchFetch?.waiting ?? 0) < 20;
+  // The producer's own heartbeat, not an inference from queue depth. A crawl
+  // that has not succeeded in a while is the state that looked like "merely
+  // slow" for hours, because the queue kept draining a backlog underneath it.
+  const CRAWL_STALE_MINUTES = 20;
+  const crawlStalled = h.crawlStaleMinutes === null || h.crawlStaleMinutes > CRAWL_STALE_MINUTES;
   const brokenScopes = h.scopeChecks.filter((s) => !s.ok);
   const staleFlow = h.byBucket.length === 0;
 
@@ -57,11 +57,15 @@ export default async function CrawlHealthPage() {
       <div className="ops-grid">
         <div className={`ops-card${h.apexTotal === 0 ? ' is-warn' : ''}`}>
           <span className="ops-label">Seeds in scope</span>
-          <span className="ops-n">{h.apexTotal}</span>
+          <span className="ops-n">{h.apexTotal.toLocaleString()}</span>
         </div>
-        <div className={`ops-card${seedStarved ? ' is-warn' : ''}`}>
+        <div className={`ops-card${crawlStalled ? ' is-warn' : ''}`}>
+          <span className="ops-label">Last crawl pass</span>
+          <span className="ops-n">{ago(h.lastCrawlSuccess)}</span>
+        </div>
+        <div className="ops-card">
           <span className="ops-label">Drainable now</span>
-          <span className="ops-n">{h.apexDrainable}</span>
+          <span className="ops-n">{h.apexDrainable.toLocaleString()}</span>
         </div>
         <div className={`ops-card${staleFlow ? ' is-warn' : ''}`}>
           <span className="ops-label">Boards / hour</span>
@@ -75,14 +79,16 @@ export default async function CrawlHealthPage() {
         </div>
       </div>
 
-      {seedStarved && (
+      {crawlStalled && (
         <div className="ops-section">
-          <h2>Seed-starved</h2>
+          <h2>Crawl stalled</h2>
           <p className="ops-empty">
-            {h.apexDrainable} account(s) are eligible to crawl but only{' '}
-            {matchFetch?.waiting ?? 0} match-fetch job(s) are queued. The producer is not
-            enqueuing — check ladder-crawl on the pipeline page. Ingestion can look merely
-            slow in this state, because the queue keeps draining whatever was already in it.
+            {h.lastCrawlSuccess === null
+              ? 'ladder-crawl has never completed a pass.'
+              : `ladder-crawl last succeeded ${ago(h.lastCrawlSuccess)}, over the ${CRAWL_STALE_MINUTES}-minute threshold.`}{' '}
+            Nothing new is being enqueued. Ingestion can still look healthy for a while in
+            this state, because the match-fetch queue keeps draining whatever was already in
+            it — check the job list on the pipeline page for the failure.
           </p>
         </div>
       )}
@@ -148,9 +154,10 @@ export default async function CrawlHealthPage() {
               </tbody>
             </table>
             <p className="ops-foot">
-              Next locked-out seed becomes eligible {until(h.nextDrainable)}. A pool this size
-              is exhausted in minutes, so the re-crawl window — not the API budget — is
-              usually what caps throughput.
+              Next locked-out seed becomes eligible {until(h.nextDrainable)}.{' '}
+              {h.scope.open
+                ? 'The scope is open, so the whole frontier is eligible and supply is not the constraint — the fetch budget is.'
+                : 'A pool this size is exhausted in minutes, so the re-crawl window — not the API budget — is usually what caps throughput.'}
             </p>
           </>
         )}
@@ -186,9 +193,10 @@ export default async function CrawlHealthPage() {
         {h.waitingByBucket.length > 0 && (
           <p className="ops-foot">
             Waiting match-fetch work by bucket:{' '}
-            {h.waitingByBucket.map((b) => `${bucketLabel(b.bucket)} ${b.jobs}`).join(' · ')}. Work
-            for a bucket outside the current scope is a backlog from before the scope changed;
-            the worker drops it on the next restart.
+            {h.waitingByBucket.map((b) => `${bucketLabel(b.bucket)} ${b.jobs}`).join(' · ')}.
+            {h.scope.open
+              ? ' The scope is open, so every bucket here is wanted.'
+              : ' Work for a bucket outside the current scope is a backlog from before the scope changed; the worker drops it on the next restart.'}
           </p>
         )}
       </div>
