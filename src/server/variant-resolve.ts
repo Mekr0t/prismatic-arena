@@ -16,6 +16,7 @@
 // +3, which still resolves to the right variant.
 
 import { query } from '@/lib/db';
+import { regionCodesFor } from '@/config/regions';
 import { inferredVariants } from './set-config';
 
 export interface VariantScope {
@@ -64,7 +65,7 @@ export async function resolveVariants(
            JOIN matches m ON m.match_id = mp.match_id
            JOIN participant_units pu ON pu.participant_id = mp.id
           WHERE mp.comp_id = ANY($1::int[])
-            AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+            AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
             AND m.queue_id = 1100
             AND pu.character_id = $5
        ),
@@ -96,7 +97,7 @@ export async function resolveVariants(
         WHERE c.rn = 1
         GROUP BY c.comp_id, v.character_id`,
       [
-        compIds, scope.patchId, scope.region, scope.rankBucket,
+        compIds, scope.patchId, regionCodesFor(scope.region), scope.rankBucket,
         fam.base, setNumber, fam.minDelta, fam.markerTrait, fam.familyPattern,
       ],
     );

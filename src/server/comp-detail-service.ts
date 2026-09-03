@@ -33,6 +33,7 @@ import {
   type CompStatRow,
 } from './comps-service';
 import { tierForScore } from './queue/comp-stats-math';
+import { regionCodesFor } from '@/config/regions';
 import { emblemsFromSignature } from './queue/comp-signature';
 import type {
   CompDetailVM,
@@ -277,7 +278,11 @@ export async function getCompDetail(
       : members;
   const buildMemberIds = buildMembers.map((m) => m.comp_id);
   const carryIds = header.identity.carries.map((c) => c.characterId);
-  const scope = [memberIds, patchId, region, rankBucket] as const;
+  // matches.region is the PLATFORM; `region` here is the super-region the
+  // derived tables are keyed by, so raw-board queries need it expanded or
+  // they match nothing at all (see regionCodesFor).
+  const regionCodes = regionCodesFor(region);
+  const scope = [memberIds, patchId, regionCodes, rankBucket] as const;
 
   // ── Board-level aggregations (SQL-side, small results). ─────────────────────
   const [unitStarRows, levelRows, placementRows, trendRows, bucketDayRows, carryItemRows] =
@@ -288,7 +293,7 @@ export async function getCompDetail(
            FROM match_participants mp
            JOIN matches m ON m.match_id = mp.match_id
           WHERE mp.comp_id = ANY($1::int[])
-            AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+            AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
             AND m.queue_id = 1100
        ),
        bu AS (
@@ -316,7 +321,7 @@ export async function getCompDetail(
          FROM match_participants mp
          JOIN matches m ON m.match_id = mp.match_id
         WHERE mp.comp_id = ANY($1::int[])
-          AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+          AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
           AND m.queue_id = 1100
         GROUP BY 1`,
       [...scope],
@@ -326,7 +331,7 @@ export async function getCompDetail(
          FROM match_participants mp
          JOIN matches m ON m.match_id = mp.match_id
         WHERE mp.comp_id = ANY($1::int[])
-          AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+          AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
           AND m.queue_id = 1100
         GROUP BY mp.placement`,
       [...scope],
@@ -350,7 +355,7 @@ export async function getCompDetail(
          FROM match_participants mp
          JOIN matches m ON m.match_id = mp.match_id
         WHERE mp.comp_id = ANY($1::int[])
-          AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+          AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
           AND m.queue_id = 1100
         GROUP BY 1
         ORDER BY 1`,
@@ -362,10 +367,10 @@ export async function getCompDetail(
       `SELECT m.game_datetime::date::text AS date, COUNT(*)::int AS boards
          FROM match_participants mp
          JOIN matches m ON m.match_id = mp.match_id
-        WHERE m.patch_id = $1 AND m.region = $2 AND mp.rank_bucket = $3
+        WHERE m.patch_id = $1 AND m.region = ANY($2::text[]) AND mp.rank_bucket = $3
           AND m.queue_id = 1100
         GROUP BY 1`,
-      [patchId, region, rankBucket],
+      [patchId, regionCodes, rankBucket],
     ),
     carryIds.length === 0 || buildMemberIds.length === 0
       ? Promise.resolve([] as CarryItemRow[])
@@ -375,10 +380,10 @@ export async function getCompDetail(
              JOIN matches m ON m.match_id = mp.match_id
              JOIN participant_units pu ON pu.participant_id = mp.id
             WHERE mp.comp_id = ANY($1::int[])
-              AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+              AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
               AND m.queue_id = 1100
               AND pu.character_id = ANY($5::text[])`,
-          [buildMemberIds, patchId, region, rankBucket, carryIds],
+          [buildMemberIds, patchId, regionCodes, rankBucket, carryIds],
         ),
   ]);
 

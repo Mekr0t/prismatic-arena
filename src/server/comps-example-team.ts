@@ -12,6 +12,7 @@
 // plays, 6-trait badges on 5-unit strips, missing hit-state stars).
 
 import { query } from '@/lib/db';
+import { regionCodesFor } from '@/config/regions';
 import { getCatalog } from './static-data';
 import { COMPONENT_ITEMS, isRngAcquiredItem } from './item-filters';
 import { resolveVariants, pickVariants } from './variant-resolve';
@@ -147,6 +148,10 @@ export async function loadExampleTeams(
   rankBucket: string,
   cat: CatalogT,
 ): Promise<Map<string, ExampleTeamVM>> {
+  // matches.region is the PLATFORM a match was played on; `region` here is the
+  // super-region the derived tables are keyed by, so it has to be expanded or
+  // every board query matches nothing (see regionCodesFor).
+  const regionCodes = regionCodesFor(region);
   const out = new Map<string, ExampleTeamVM>();
   // A comp can back SEVERAL groups at once (the detail page pools it into the
   // variant strip AND shows it as a most-played board), so the index is
@@ -177,14 +182,14 @@ export async function loadExampleTeams(
            JOIN matches m ON m.match_id = mp.match_id
            JOIN participant_units pu ON pu.participant_id = mp.id
           WHERE mp.comp_id = ANY($1::int[])
-            AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+            AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
             AND m.queue_id = 1100
           GROUP BY mp.comp_id, pu.character_id, mp.id
        )
        SELECT comp_id, character_id, copies, stars, count(*)::int AS boards
          FROM pb
         GROUP BY comp_id, character_id, copies, stars`,
-      [compIds, patchId, region, rankBucket],
+      [compIds, patchId, regionCodes, rankBucket],
     ),
     query<TraitAggRow>(
       `SELECT mp.comp_id, pt.trait_id, pt.num_units, pt.active_style, count(*)::int AS cnt
@@ -192,11 +197,11 @@ export async function loadExampleTeams(
          JOIN matches m ON m.match_id = mp.match_id
          JOIN participant_traits pt ON pt.participant_id = mp.id
         WHERE mp.comp_id = ANY($1::int[])
-          AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+          AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
           AND m.queue_id = 1100
           AND pt.num_units > 0
         GROUP BY mp.comp_id, pt.trait_id, pt.num_units, pt.active_style`,
-      [compIds, patchId, region, rankBucket],
+      [compIds, patchId, regionCodes, rankBucket],
     ),
     query<ItemSetRow>(
       // For each (comp, unit, board), take the completed items of the most-
@@ -214,7 +219,7 @@ export async function loadExampleTeams(
            JOIN matches m ON m.match_id = mp.match_id
            JOIN participant_units pu ON pu.participant_id = mp.id
           WHERE mp.comp_id = ANY($1::int[])
-            AND m.patch_id = $2 AND m.region = $3 AND mp.rank_bucket = $4
+            AND m.patch_id = $2 AND m.region = ANY($3::text[]) AND mp.rank_bucket = $4
             AND m.queue_id = 1100
        ),
        sets AS (
@@ -228,7 +233,7 @@ export async function loadExampleTeams(
        SELECT comp_id, character_id, completed, count(*)::int AS boards
          FROM sets
         GROUP BY comp_id, character_id, completed`,
-      [compIds, patchId, region, rankBucket, [...COMPONENT_ITEMS]],
+      [compIds, patchId, regionCodes, rankBucket, [...COMPONENT_ITEMS]],
     ),
     // Variants Riot does not report (set 18's Lux). No-ops for sets with none.
     resolveVariants(cat.setNumber, compIds, { patchId, region, rankBucket }),

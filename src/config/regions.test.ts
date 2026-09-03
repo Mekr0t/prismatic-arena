@@ -8,6 +8,7 @@ import {
   routeForPlatform,
   superRegionForPlatform,
   superRegionForRegionCode,
+  regionCodesFor,
 } from './regions';
 
 // Two different partitions of the same platforms, and conflating them is the
@@ -71,4 +72,43 @@ test('mainland China is absent, not present-and-empty', () => {
 test('me1 is a real platform, so the crawl can be pointed at it', () => {
   assert.ok(isPlatform('me1'));
   assert.equal(routeForPlatform('me1'), 'europe');
+});
+
+// ── expanding a selection back to platforms ──────────────────────────────────
+//
+// The derived tables are keyed by super-region; matches.region still holds the
+// platform. Any query reading raw boards for a selection has to expand one into
+// the other, and getting this wrong is SILENT: comparing 'EMEA' against
+// matches.region matches nothing, so every example board renders as "no board
+// data" while the tier list above it looks fine. Measured when it happened —
+// 0 boards against 211,788.
+
+test('a super-region expands to the platform codes it covers', () => {
+  assert.deepEqual(regionCodesFor('EMEA').sort(), ['EUN1', 'EUW1', 'ME1', 'RU', 'TR1']);
+  assert.deepEqual(regionCodesFor('AMER').sort(), ['BR1', 'LA1', 'LA2', 'NA1']);
+});
+
+test('the expansion is UPPERCASE, because matches.region is', () => {
+  // matches.region comes from the match id prefix ("EUW1_7967092353"), so a
+  // lowercase Platform literal would match nothing.
+  for (const code of regionCodesFor('EMEA')) assert.equal(code, code.toUpperCase());
+});
+
+test('every expanded code maps back to the super-region it came from', () => {
+  for (const region of ['AMER', 'EMEA', 'APAC']) {
+    for (const code of regionCodesFor(region)) {
+      assert.equal(superRegionForRegionCode(code), region, code);
+    }
+  }
+});
+
+test('a platform code or unknown value passes through as itself', () => {
+  // Legacy rows, a directly-selected platform, and the persist check's synthetic
+  // region all have to keep resolving.
+  assert.deepEqual(regionCodesFor('EUW1'), ['EUW1']);
+  assert.deepEqual(regionCodesFor('ZZTEST1'), ['ZZTEST1']);
+});
+
+test('the selection is case-insensitive on the super-region name', () => {
+  assert.deepEqual(regionCodesFor('emea').sort(), regionCodesFor('EMEA').sort());
 });

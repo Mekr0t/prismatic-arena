@@ -83,3 +83,23 @@ export function regionalHost(route: RegionalRoute): string {
 export function routeForPlatform(platform: Platform): RegionalRoute {
   return PLATFORM_TO_REGION[platform];
 }
+
+/**
+ * The `matches.region` codes a selected region covers.
+ *
+ * The derived tables (`comp_stats`, `bucket_totals`, `tier_list_entries`,
+ * `comp_stat_trends`) are keyed by SUPER-REGION, but `matches.region` still
+ * holds the platform a match was played on — so any query that reads raw boards
+ * for a selection has to expand the one into the other. Comparing them directly
+ * silently matches nothing: a tier list built from `comp_stats` hands you
+ * 'EMEA', no `matches` row has ever said 'EMEA', and every example board comes
+ * back empty.
+ *
+ * A value that is not a super-region passes through as itself, so a raw platform
+ * code, a legacy row, or the persist check's synthetic 'ZZTEST1' still resolve.
+ */
+export function regionCodesFor(selected: string): string[] {
+  const upper = selected.toUpperCase();
+  if (upper !== 'AMER' && upper !== 'EMEA' && upper !== 'APAC') return [selected];
+  return PLATFORMS.filter((p) => PLATFORM_TO_SUPER_REGION[p] === upper).map((p) => p.toUpperCase());
+}
