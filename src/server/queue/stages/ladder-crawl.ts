@@ -144,6 +144,13 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
     // frontier still gets explored; already-checked out-of-scope players sort
     // last and fall off the LIMIT.
     const scopeUpper = CRAWL.tiers.map((t) => t.toUpperCase());
+    // EVERY ::int HERE IS LOAD-BEARING. node-postgres sends parameters with no
+    // type OID, and make_interval's named arguments are overloaded, so inside a
+    // CASE Postgres cannot resolve the branches and falls back to text:
+    // "function make_interval(hours => text) does not exist". That threw on
+    // every pass, and the symptom was an idle queue rather than a loud failure —
+    // the backlog kept draining, so ingestion looked merely slow.
+    //
     // The tier TTL is PER CLASS. An in-scope tier is re-checked on the ordinary
     // window because those players are the sample and a demotion matters; a tier
     // already resolved OUT of scope (or resolved as unranked, hence NULL) is
@@ -155,10 +162,10 @@ export async function runLadderCrawl(data: LadderCrawlJob, ctx: JobContext): Pro
               (tier_checked_at IS NOT NULL
                AND tier_checked_at > now() - make_interval(hours =>
                      CASE WHEN tier IS NOT NULL AND upper(tier) = ANY($4::text[])
-                          THEN $3 ELSE $5 END)) AS tier_fresh
+                          THEN $3::int ELSE $5::int END)) AS tier_fresh
          FROM accounts
         WHERE last_crawled_at IS NULL
-           OR last_crawled_at < now() - make_interval(hours => $2)
+           OR last_crawled_at < now() - make_interval(hours => $2::int)
         ORDER BY (tier IS NOT NULL AND upper(tier) = ANY($4::text[])) DESC,
                  (tier IS NULL) DESC,
                  last_crawled_at ASC NULLS FIRST
@@ -356,8 +363,8 @@ export async function releaseCrawlCandidate(puuid: string): Promise<void> {
   const retryMinutes = envInt('CRAWL_FAILED_RETRY_MINUTES', 15);
   await query(
     `UPDATE accounts
-        SET last_crawled_at = now() - make_interval(hours => $2) + make_interval(mins => $3)
-      WHERE puuid = $1`,
+        SET last_crawled_at = now() - make_interval(hours => $2::int) + make_interval(mins => $3::int)
+      WHERE puuid = $1::text`,
     [puuid, recrawlHours, retryMinutes],
   );
 }
