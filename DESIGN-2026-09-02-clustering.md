@@ -1,6 +1,6 @@
 # Comp clustering rework — design draft
 
-**Status:** revision 4 (2026-09-02). The model is implemented as a pure, tested
+**Status:** revision 5 (2026-09-03). The model is implemented as a pure, tested
 module and is NOT wired into the pipeline — see §12. Measurements are from the
 live database, set 18, ranked queue only, `player_count = 8`, boards of at least
 `MIN_BOARD_UNITS` (6) real cost-1–5 units.
@@ -9,6 +9,12 @@ live database, set 18, ranked queue only, `player_count = 8`, boards of at least
 `src/server/queue/comp-signature.ts` + `stages/cluster.ts`, the greedy archetype
 merge in `comp-merge.ts` + `comp-profile.ts` + `stages/merge.ts`, and the disjoint
 rank/region bucketing in `src/config/rank-buckets.ts`.
+
+**What changed in revision 5:** the rank dial moves off the tier list entirely
+and onto the comp detail page, where it recalculates every stat rather than only
+composition (§5.6) — superseding the revision-3 recommendation. Gated on the
+rework landing, because under exact-signature identity the comp list genuinely
+differs per bucket.
 
 **What changed in revision 3:** the rank model turned out to rest on a false
 premise. `rank_bucket` is the tier of the player the crawler *drained*, not of
@@ -352,21 +358,55 @@ Whichever rule bounds the list, show each line's sample size and the confidence
 interval on its placement, so a thin line reads as thin instead of being silently
 dropped or silently trusted.
 
-### 5.6 What the rank dial changes on the detail page
+### 5.6 Where the rank dial lives — the list loses it, the detail page gains it
 
-Widening to gold+ to get a readable itemisation sample is exactly right. But
-widening also changes *placement*, and low-rank placement for a master-defined
-line reintroduces the bias §5 exists to remove.
+Revision 3 recommended that the dial "widen composition, not the verdict":
+placement, top-4 and tier pinned to `master+`, with the selector governing only
+itemisation and star rates. **That was the wrong shape, and it is superseded.**
 
-**Recommendation: the dial widens composition, not the verdict.** Placement, top-4
-and tier stay at `master+` and are labelled as such; the selector governs
-itemisation, star rates, augment rates and example boards, with the sample size
-shown next to whatever tier is selected.
+The concern behind it was real — low-elo placement must not decide which comps
+are S-tier — but pinning the stats was the wrong place to fix it. The right fix
+is structural:
 
-This is where the dial earns its keep: "what does this item do on this unit in
-this comp" can be n = 2 at `master+`, which is not data. Widening to `gold+`
-turns it into a real distribution without ever letting low-elo placement touch
-the comp's verdict.
+- **The tier list has no rank picker at all.** Lines are elected from `master+`
+  and their ranking is always the `master+` verdict. There is nothing to corrupt,
+  because there is no dial on the page that produces the verdict.
+- **The detail page has the picker, and it recalculates everything.** Avg place,
+  top-4, win, play rate, games, placement distribution, hit state, trend, final
+  level, carry items, unit frequencies and most-played boards all recompute for
+  the selected scope. Asking "how does this line actually perform in gold+" is a
+  legitimate question with an honest answer, and the user asked it explicitly by
+  moving the selector.
+
+This is better than the revision-3 version because it removes the failure mode
+instead of labelling around it. It also stops the page telling two stories at
+once — a revision-3 detail page would have shown `master+` placement above
+`gold+` itemisation, which is a comparison nobody asked for.
+
+**The example board does NOT follow the dial.** It is the line's canonical board,
+elected with the line, and it stays the same at every scope. A per-scope example
+would quietly turn the page into "here is a different comp" as you widen.
+
+**This is gated on the rework landing.** Under exact-signature identity the comp
+LIST genuinely differs per bucket — which comps clear the sample floor is
+completely different in `iron_gold` and `master_plus` — so removing the picker
+today would hide a real disagreement rather than express a real equivalence. The
+picker stays on the list page until centroids are master+-elected and frozen,
+and it is worth keeping meanwhile: it is the clearest view of how the buckets
+currently diverge.
+
+**The honest counterpart: not every line has a sample in every scope.** A
+master-only line barely played in gold has a handful of gold+ boards, and the
+detail page must say so rather than render a confident number over n = 4. Every
+recalculated figure needs its sample size and interval beside it, and a scope
+with too little data needs an explicit empty state — the same discipline §5.5
+applies to the list.
+
+Later, the same mechanism carries an **explorer**: per-item and per-unit stats
+within a line, filterable. That is exactly the case the dial was invented for —
+"what does this item do on this unit in this comp" is n = 2 at `master+` and a
+real distribution at `gold+` — and it is why the picker belongs on the detail
+page rather than nowhere.
 
 ---
 
