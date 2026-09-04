@@ -5,12 +5,15 @@ import { PLATFORMS, superRegionForPlatform } from '@/config/regions';
 import { tiersAtOrAbove } from '@/config/rank-buckets';
 import { MIN_BOARD_UNITS, isEmblemItem } from '../comp-signature';
 import {
+  CORE_RATE,
   MIN_SEPARATION,
   assignBoard,
   convergeCentroids,
   coreUnits,
   groupBoards,
   jaccard,
+  headlineTrait,
+  nameCarries,
   nameCentroid,
   resolveNameCollisions,
   type Centroid,
@@ -71,6 +74,74 @@ interface ScannedBoard {
   tier: string | null;
   /** Units carrying ≥2 non-emblem items — the naming scheme's carry evidence. */
   itemised: string[];
+  /** Per-unit star and completed items, kept ONLY for the electing pass — the
+   *  example board is built from those boards, and carrying this for all 250k
+   *  boards of a patch would be the heap blow-up cluster.ts was rewritten to
+   *  avoid. */
+  detail?: Map<string, { star: number; items: string[] }>;
+}
+
+/** A unit is shown at 3★ / with items when that is the usual outcome for the
+ *  players who FIELD it. The denominator is deliberately the boards that fielded
+ *  the unit, not every board in the line. */
+const EX_STAR_MIN_RATE = Number(process.env.ELECT_EX_STAR_MIN_RATE ?? 0.5);
+const EX_ITEM_MIN_RATE = Number(process.env.ELECT_EX_ITEM_MIN_RATE ?? 0.5);
+/** Units below this appearance rate are left off the example board — it is meant
+ *  to be the typical board, not the union of everything anyone played. */
+const EX_UNIT_MIN_RATE = Number(process.env.ELECT_EX_UNIT_MIN_RATE ?? 0.5);
+
+interface ExampleUnit {
+  characterId: string;
+  rate: number;
+  star: number;
+  items: string[];
+}
+
+/**
+ * The line's canonical board: the units it usually fields, at the star and with
+ * the build their own players usually reach.
+ *
+ * Elected WITH the line and never recomputed per scope — a per-scope example
+ * would quietly turn the detail page into "here is a different comp" as the
+ * reader widens the rank dial for sample.
+ */
+function buildExampleBoard(centroid: Centroid, members: readonly ScannedBoard[]): ExampleUnit[] {
+  const out: ExampleUnit[] = [];
+  for (const { characterId, rate } of centroid.units) {
+    if (rate < EX_UNIT_MIN_RATE) continue;
+
+    let fielded = 0;
+    let threeStar = 0;
+    let itemised = 0;
+    const buildTally = new Map<string, { items: string[]; n: number }>();
+
+    for (const b of members) {
+      const d = b.detail?.get(characterId);
+      if (!d) continue;
+      fielded += 1;
+      if (d.star >= 3) threeStar += 1;
+      if (d.items.length >= 2) {
+        itemised += 1;
+        const key = [...d.items].sort().join('|');
+        const hit = buildTally.get(key);
+        if (hit) hit.n += 1;
+        else buildTally.set(key, { items: [...d.items].sort(), n: 1 });
+      }
+    }
+    if (fielded === 0) continue;
+
+    let items: string[] = [];
+    if (itemised / fielded >= EX_ITEM_MIN_RATE && buildTally.size > 0) {
+      items = [...buildTally.values()].sort((a, b) => b.n - a.n || (a.items[0] < b.items[0] ? -1 : 1))[0].items;
+    }
+    out.push({
+      characterId,
+      rate,
+      star: threeStar / fielded >= EX_STAR_MIN_RATE ? 3 : 1,
+      items,
+    });
+  }
+  return out;
 }
 
 const yieldToEventLoop = () => new Promise<void>((r) => setImmediate(r));
@@ -134,6 +205,7 @@ async function scanBoards(
   costs: Map<string, number>,
   tierFilter: string[] | null,
   ctx: JobContext,
+  withDetail = false,
 ): Promise<ScannedBoard[]> {
   const out: ScannedBoard[] = [];
   let cursor = '0';
@@ -162,24 +234,36 @@ async function scanBoards(
     const units = await client.query<{
       participant_id: string;
       character_id: string;
+      star_tier: number | null;
       item_ids: string[] | null;
     }>(
-      `SELECT participant_id, character_id, item_ids
+      `SELECT participant_id, character_id, star_tier, item_ids
          FROM participant_units WHERE participant_id = ANY($1::bigint[])`,
       [ids],
     );
 
-    const byPart = new Map<string, { units: Set<string>; itemised: Set<string> }>();
+    const byPart = new Map<
+      string,
+      { units: Set<string>; itemised: Set<string>; detail?: Map<string, { star: number; items: string[] }> }
+    >();
     for (const row of units.rows) {
       if ((costs.get(row.character_id) ?? 0) < 1 || (costs.get(row.character_id) ?? 0) > 5) continue;
       let e = byPart.get(row.participant_id);
       if (!e) {
-        e = { units: new Set(), itemised: new Set() };
+        e = { units: new Set(), itemised: new Set(), detail: withDetail ? new Map() : undefined };
         byPart.set(row.participant_id, e);
       }
       e.units.add(row.character_id);
-      if ((row.item_ids ?? []).filter((it) => !isEmblemItem(it)).length >= 2) {
-        e.itemised.add(row.character_id);
+      const items = (row.item_ids ?? []).filter((it) => !isEmblemItem(it));
+      if (items.length >= 2) e.itemised.add(row.character_id);
+      if (e.detail) {
+        // A duplicate copy is still one unit; keep the best-equipped, then the
+        // higher star, which is the copy a player would call "theirs".
+        const prev = e.detail.get(row.character_id);
+        const star = row.star_tier ?? 1;
+        if (!prev || items.length > prev.items.length || (items.length === prev.items.length && star > prev.star)) {
+          e.detail.set(row.character_id, { star, items });
+        }
       }
     }
 
@@ -193,6 +277,7 @@ async function scanBoards(
         region: p.region,
         tier: p.tier,
         itemised: [...e.itemised],
+        detail: e.detail,
       });
     }
 
@@ -289,7 +374,7 @@ export async function runElect(job: ElectJob, ctx: JobContext): Promise<void> {
     // 1 ─ ELECT from the top of the ladder only.
     const electFloor = tiersAtOrAbove(ELECT_FLOOR);
     if (electFloor.length === 0) throw new Error(`ELECT_TIER_FLOOR is not a tier: ${ELECT_FLOOR}`);
-    const electing = await scanBoards(client, patchId, costs, electFloor, ctx);
+    const electing = await scanBoards(client, patchId, costs, electFloor, ctx, true);
     if (electing.length < MIN_ELECT_BOARDS) {
       console.log(
         `[elect] only ${electing.length} ${ELECT_FLOOR}+ boards on patch ${patchId} ` +
@@ -322,6 +407,23 @@ export async function runElect(job: ElectJob, ctx: JobContext): Promise<void> {
     );
     const names = resolveNameCollisions(rawNames, res.centroids, statics);
 
+    // The name's own components, stored so the read path renders exactly what the
+    // line is called rather than re-deriving them and risking disagreement.
+    const display = res.centroids.map((c) => {
+      const members = electedMembers.get(c.index) ?? [];
+      const core = coreUnits(c, CORE_RATE);
+      const trait = headlineTrait(c, statics);
+      const carryNames = nameCarries(c, itemisationFor(members), statics);
+      // nameCarries returns display names; the read path needs ids for portraits.
+      const byName = new Map<string, string>();
+      for (const u of core) byName.set(statics.unitNames.get(u) ?? u, u);
+      return {
+        carries: carryNames.map((nm) => byName.get(nm) ?? nm),
+        traitId: trait ? ([...statics.traitNames].find(([, v]) => v === trait)?.[0] ?? null) : null,
+        exampleBoard: JSON.stringify(buildExampleBoard(c, members)),
+      };
+    });
+
     // 3 ─ Assign EVERY board on the patch, at every tier, into the frozen lines.
     const all = await scanBoards(client, patchId, costs, null, ctx);
 
@@ -353,9 +455,11 @@ export async function runElect(job: ElectJob, ctx: JobContext): Promise<void> {
           await client.query(
             `UPDATE comp_lines
                 SET core_units = $2, profile = $3::jsonb, name = $4, slug = $5,
-                    elected_boards = $6, computed_at = now()
+                    elected_boards = $6, carries = $7, trait_id = $8,
+                    example_board = $9::jsonb, computed_at = now()
               WHERE id = $1`,
-            [existingId, core, profile, names[i], slug, boards],
+            [existingId, core, profile, names[i], slug, boards,
+             display[i].carries, display[i].traitId, display[i].exampleBoard],
           );
           lineIdByIndex[i] = existingId;
         } else {
@@ -365,10 +469,12 @@ export async function runElect(job: ElectJob, ctx: JobContext): Promise<void> {
           // line with another (migration 0024).
           const ins = await client.query<{ id: number }>(
             `INSERT INTO comp_lines
-               (set_number, patch_id, core_units, profile, name, slug, elected_boards)
-             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+               (set_number, patch_id, core_units, profile, name, slug, elected_boards,
+                carries, trait_id, example_board)
+             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb)
              RETURNING id`,
-            [setNumber, patchId, core, profile, names[i], slug, boards],
+            [setNumber, patchId, core, profile, names[i], slug, boards,
+             display[i].carries, display[i].traitId, display[i].exampleBoard],
           );
           lineIdByIndex[i] = ins.rows[0].id;
         }

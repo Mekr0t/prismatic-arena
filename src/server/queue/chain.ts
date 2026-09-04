@@ -102,6 +102,36 @@ export async function advanceChain(from: QueueName, setNumber?: number): Promise
   console.log(`[chain] ${from} → ${next}${setNumber ? ` (set ${setNumber})` : ''}`);
 }
 
+/**
+ * True when any stage of the chain is still in flight.
+ *
+ * WHY THE CHAIN ALONE IS NOT ENOUGH. Chaining removes concurrency *within* a
+ * pass — each stage starts from a settled predecessor — but the SCHEDULER kicks
+ * the head on a fixed cadence and knows nothing about whether the previous pass
+ * has finished. A repeatable job gets a fresh id every firing, so the stable
+ * `chain-<stage>` dedupe does not cover it. While a pass fits inside the
+ * interval that is invisible; once it does not, the head starts a second pass
+ * and stages from the two passes run side by side.
+ *
+ * Observed 2026-09-04, after the dataset grew ~2.5x in a day: merge at 1,028 s
+ * and cluster at 796 s running SIMULTANEOUSLY, with everything behind them
+ * queued on locks — exactly the interleaving this file's header says corrupts
+ * what the read path serves (a rollup over half-stamped boards, a prune while
+ * trend-tier regenerates).
+ */
+export async function downstreamBusy(): Promise<boolean> {
+  // Cluster is deliberately NOT checked: it is the head, so its own job is
+  // always active when this is called, and its concurrency of 1 already makes
+  // cluster-on-cluster impossible. What has to be excluded is a head starting
+  // while a LATER stage of the previous pass is still working.
+  const stages: QueueName[] = [QUEUE.rollup, QUEUE.merge, QUEUE.trendTier, QUEUE.elect];
+  for (const name of stages) {
+    const counts = await queueFor(name).getJobCounts('active', 'waiting', 'delayed');
+    if ((counts.active ?? 0) + (counts.waiting ?? 0) + (counts.delayed ?? 0) > 0) return true;
+  }
+  return false;
+}
+
 /** Close the producer connections (worker shutdown). */
 export async function closeChain(): Promise<void> {
   await Promise.all([...queues.values()].map((q) => q.close()));

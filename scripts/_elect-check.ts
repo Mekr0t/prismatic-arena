@@ -22,7 +22,34 @@ const snapshot = async () => {
 
 const ctx = { setItems: () => {} };
 
+/** Refuse to run beside a live pipeline.
+ *
+ *  Elect's clear-first pass rewrites `line_id` across every board of a patch,
+ *  and cluster does the same to `comp_id`. In the chain they are serialised; run
+ *  from the CLI while the worker is up, they are not, and both sides sit on
+ *  locks — observed 2026-09-04 with this check blocked for eleven minutes behind
+ *  a merge that was itself overlapping a cluster. The failure is slow rather
+ *  than loud, which is exactly why it is worth refusing up front. */
+async function pipelineIdle(): Promise<boolean> {
+  const rows = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM ingestion_jobs
+      WHERE status = 'running'
+        AND job_type IN ('cluster', 'rollup', 'merge', 'trend-tier', 'elect')`,
+  );
+  return (rows.rows[0]?.n ?? 0) === 0;
+}
+
 async function main() {
+  if (!(await pipelineIdle())) {
+    console.error(
+      'a pipeline stage is running — stop the worker (or wait for the pass to finish) before ' +
+        'running this, or both sides will block each other on match_participants locks.',
+    );
+    process.exitCode = 1;
+    await pool.end();
+    return;
+  }
+
   console.log('--- pass 1 ---');
   await runElect({}, ctx);
   const first = await snapshot();

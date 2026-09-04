@@ -13,7 +13,7 @@ import { runTrendTier, type TrendTierJob } from './stages/trend-tier';
 import { runMerge, type MergeJob } from './stages/merge';
 import { runElect, type ElectJob } from './stages/elect';
 import { registerSchedules, clearSchedules } from './scheduler';
-import { advanceChain, closeChain, CHAIN_ENABLED } from './chain';
+import { advanceChain, downstreamBusy, closeChain, CHAIN_ENABLED } from './chain';
 
 // Worker process. Each stage runs here as its own BullMQ worker in one process
 // (the "one process, split by stage" shape) so pulling any onto its own machine
@@ -67,9 +67,20 @@ const matchWorker = new Worker<MatchFetchJob>(
 
 const clusterWorker = new Worker<ClusterJob>(
   QUEUE.cluster,
-  (job) =>
+  async (job) => {
+    // SKIP RATHER THAN OVERLAP. The scheduler kicks the head on a cadence and
+    // cannot see whether the previous pass is still draining; once a pass takes
+    // longer than the interval, stages from two passes run side by side —
+    // measured 2026-09-04 with merge and cluster both live for over ten minutes,
+    // everything behind them stacked on locks. The stages are full recomputes,
+    // so a skipped tick loses nothing: the next one starts from settled state.
+    if (CHAIN_ENABLED && (await downstreamBusy())) {
+      console.log('[cluster] previous pipeline pass still in flight — skipping this tick');
+      return;
+    }
     // Cross-region full sweep over stored boards — region is null (not per-shard).
-    withJobTracking('cluster', null, (ctx) => runCluster(job.data, ctx)),
+    return withJobTracking('cluster', null, (ctx) => runCluster(job.data, ctx));
+  },
   // Concurrency 1: a single full re-cluster pass; two at once would just contend.
   { connection: bullConnection, concurrency: 1, lockDuration: LONG_LOCK },
 );
