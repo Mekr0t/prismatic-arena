@@ -478,10 +478,26 @@ export function nameCarries(
   limit = 2,
 ): string[] {
   const core = coreUnits(centroid);
-  return itemisation
+  const picked = itemisation
     .filter((i) => core.has(i.characterId))
     .sort((a, b) => b.rate - a.rate || b.boards - a.boards || (a.characterId < b.characterId ? -1 : 1))
-    .slice(0, limit)
+    .slice(0, limit);
+
+  // PICKED by itemisation rate, RENDERED in a canonical order. Those are
+  // different jobs: rate says which units carry the line, but letting it also
+  // decide word order makes two lines with the same carries read as different
+  // names — observed as "Solar Akali Camille" beside "Solar Camille Akali",
+  // which the collision resolver never saw because the strings differed. Cost
+  // descending also matches how a player would say it.
+  return picked
+    .slice()
+    .sort(
+      (a, b) =>
+        (statics.unitCosts?.get(b.characterId) ?? 0) - (statics.unitCosts?.get(a.characterId) ?? 0) ||
+        (statics.unitNames.get(a.characterId) ?? a.characterId).localeCompare(
+          statics.unitNames.get(b.characterId) ?? b.characterId,
+        ),
+    )
     .map((i) => statics.unitNames.get(i.characterId) ?? i.characterId);
 }
 

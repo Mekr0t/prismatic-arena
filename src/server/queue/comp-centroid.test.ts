@@ -332,6 +332,26 @@ test('carries are drawn from CORE units only', () => {
   assert.deepEqual(nameCarries(c, items, statics()), ['Malphite', 'Yunara']);
 });
 
+test('carries render in a CANONICAL order, whatever order they were picked in', () => {
+  // Picking by itemisation rate and rendering in that order made two lines with
+  // the same carries read as different names — "Solar Akali Camille" beside
+  // "Solar Camille Akali" — which the collision resolver never saw, because the
+  // strings differed. Cost descending is also how a player would say it.
+  const c = centroid(profile(['Malphite', 1], ['Yunara', 1], ['Azir', 1]));
+  const items: ItemisationRate[] = [
+    { characterId: 'Yunara', rate: 0.99, boards: 40 }, // 2-cost, picked first
+    { characterId: 'Malphite', rate: 0.9, boards: 38 }, // 4-cost
+  ];
+  assert.deepEqual(nameCarries(c, items, statics()), ['Malphite', 'Yunara']);
+
+  // Reversing the rates must not reverse the rendered name.
+  const flipped: ItemisationRate[] = [
+    { characterId: 'Malphite', rate: 0.99, boards: 40 },
+    { characterId: 'Yunara', rate: 0.9, boards: 38 },
+  ];
+  assert.deepEqual(nameCarries(c, flipped, statics()), ['Malphite', 'Yunara']);
+});
+
 test('the full name is trait + two carries', () => {
   const c = centroid(profile(['Malphite', 1], ['Azir', 1], ['Soraka', 0.9], ['Kennen', 0.85]));
   const items: ItemisationRate[] = [

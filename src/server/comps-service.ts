@@ -29,6 +29,7 @@
 //      toggle is on).
 
 import { unstable_cache } from 'next/cache';
+import { getLineTierList } from './comp-lines-service';
 import { query } from '@/lib/db';
 import { GKEY_SQL } from './comp-gkey';
 import { getCatalog } from './static-data';
@@ -901,24 +902,48 @@ const COMPS_CACHE_TTL = numEnv(process.env.COMPS_CACHE_TTL_S, 300);
 
 // Arguments are flattened to primitives so the cache key is deterministic —
 // passing the query object would key {} and {patchId: undefined} separately.
+/**
+ * Which model the read path serves.
+ *
+ * `centroid` reads the presence-profile lines (`comp_lines` / `line_stats`);
+ * anything else keeps the exact-signature comps this file has always served.
+ * A flag rather than a rewrite so the two can be compared on identical live data
+ * and switched back in seconds — the failure mode of a clustering change is a
+ * plausible-looking tier list that is subtly wrong, which is exactly the kind
+ * you want to be able to A/B rather than bisect.
+ *
+ * The cache key carries the model, or flipping the flag would serve the other
+ * model's cached answer until the TTL lapsed.
+ */
+const COMPS_MODEL = process.env.COMPS_MODEL === 'centroid' ? 'centroid' : 'legacy';
+
 const cachedTierList = unstable_cache(
   (
+    model: string,
     patchId: number | null,
     region: string | null,
     rankBucket: string | null,
     niche: boolean,
-  ): Promise<TierListVM> =>
-    getTierList({
+  ): Promise<TierListVM> => {
+    const q: TierListQuery = {
       patchId: patchId ?? undefined,
       region: region ?? undefined,
       rankBucket: rankBucket ?? undefined,
       niche,
-    }),
+    };
+    return model === 'centroid' ? getLineTierList(q) : getTierList(q);
+  },
   ['comps:tier-list'],
   { revalidate: COMPS_CACHE_TTL, tags: ['comps'] },
 );
 
 /** Cached `getTierList`. Use this from pages; the uncached one from scripts. */
 export function getTierListCached(q: TierListQuery = {}): Promise<TierListVM> {
-  return cachedTierList(q.patchId ?? null, q.region ?? null, q.rankBucket ?? null, !!q.niche);
+  return cachedTierList(
+    COMPS_MODEL,
+    q.patchId ?? null,
+    q.region ?? null,
+    q.rankBucket ?? null,
+    !!q.niche,
+  );
 }
