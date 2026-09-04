@@ -57,6 +57,38 @@ const SCAN_CHUNK = envInt(process.env.CLUSTER_SCAN_CHUNK, 25_000);
 // negligible, small enough to keep any single statement's parameter arrays sane.
 const WRITE_CHUNK = envInt(process.env.CLUSTER_WRITE_CHUNK, 5_000);
 
+/**
+ * A set with no match ingested in this many days is FROZEN and skipped.
+ *
+ * Clustering is a full re-derivation, and re-deriving a set nobody is crawling
+ * produces byte-identical output at full cost. Measured 2026-09-04: the sweep
+ * covered 775,608 boards of which 513,288 were set 17 — two thirds of every pass
+ * spent rebuilding a set that had not received a board since set 18 launched,
+ * and cluster had grown to 247 s average and 1,034 s at worst.
+ *
+ * Keyed on RECENT INGEST rather than on "the live set" so it needs no
+ * configuration and no set-rollover handling: a set drops out on its own when
+ * the crawler stops feeding it, and comes back on its own if it is ever
+ * backfilled. A frozen set keeps its stamps and its comps untouched — the clear
+ * and the prune are scoped to the same set list — so `comp_stats` still rebuilds
+ * for it from the stamps it already has and its patches keep serving.
+ */
+const ACTIVE_SET_DAYS = envInt(process.env.CLUSTER_ACTIVE_DAYS, 7);
+
+/** Sets that have received a board recently, newest first. Empty means the data
+ *  is older than the window, in which case the sweep falls back to every set
+ *  rather than doing nothing. */
+async function activeSets(client: PoolClient): Promise<number[]> {
+  const res = await client.query<{ set_number: number }>(
+    `SELECT DISTINCT set_number FROM matches
+      WHERE set_number IS NOT NULL
+        AND ingested_at > now() - make_interval(days => $1::int)
+      ORDER BY set_number DESC`,
+    [ACTIVE_SET_DAYS],
+  );
+  return res.rows.map((r) => r.set_number);
+}
+
 interface PartRow {
   id: string; // bigint -> string over the wire
   set_number: number;
@@ -124,6 +156,7 @@ interface ScanResult {
 async function scanBoards(
   client: PoolClient,
   setNumber: number | undefined,
+  activeOnly: number[] | null,
   ctx: JobContext,
 ): Promise<ScanResult> {
   const costs = await loadCosts(client);
@@ -189,11 +222,12 @@ async function scanBoards(
         WHERE m.queue_id = $1
           AND m.set_number IS NOT NULL
           AND ($2::int IS NULL OR m.set_number = $2)
+          AND ($5::int[] IS NULL OR m.set_number = ANY($5::int[]))
           AND m.player_count = 8
           AND mp.id > $3::bigint
         ORDER BY mp.id
         LIMIT $4`,
-      [RANKED_TFT_QUEUE_ID, setNumber ?? null, cursor, SCAN_CHUNK],
+      [RANKED_TFT_QUEUE_ID, setNumber ?? null, cursor, SCAN_CHUNK, activeOnly],
     );
     const participants = partRes.rows;
     if (participants.length === 0) break;
@@ -314,7 +348,14 @@ export async function runCluster(job: ClusterJob, ctx: JobContext): Promise<void
   try {
     // 1 ─ Chunked scan: signature every in-scope board, keeping only distinct
     //     comp seeds and one (boardId, seedIdx) pair per clusterable board.
-    const scan = await scanBoards(client, job.setNumber, ctx);
+    // An explicit setNumber overrides the freshness filter — a manual re-cluster
+    // of an old set must still be possible.
+    const active = job.setNumber === undefined ? await activeSets(client) : null;
+    const activeOnly = active && active.length > 0 ? active : null;
+    if (activeOnly) {
+      console.log(`[cluster] active set(s) in the last ${ACTIVE_SET_DAYS}d: ${activeOnly.join(', ')}`);
+    }
+    const scan = await scanBoards(client, job.setNumber, activeOnly, ctx);
     if (scan.boardsScanned === 0) {
       ctx.setItems(0);
       return;
@@ -342,8 +383,11 @@ export async function runCluster(job: ClusterJob, ctx: JobContext): Promise<void
             AND m.queue_id = $1
             AND m.set_number IS NOT NULL
             AND ($2::int IS NULL OR m.set_number = $2)
+            -- Scoped to the SAME set list as the scan. A frozen set must keep
+            -- its stamps: clearing what we do not re-stamp would un-cluster it.
+            AND ($3::int[] IS NULL OR m.set_number = ANY($3::int[]))
             AND mp.comp_id IS NOT NULL`,
-        [RANKED_TFT_QUEUE_ID, job.setNumber ?? null],
+        [RANKED_TFT_QUEUE_ID, job.setNumber ?? null, activeOnly],
       );
 
       const compIdBySeed = await upsertComps(client, scan.seeds);
