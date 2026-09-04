@@ -12,6 +12,7 @@ export const QUEUE = {
   rollup: 'rollup',
   merge: 'merge',
   trendTier: 'trend-tier',
+  elect: 'elect',
 } as const;
 
 export type QueueName = (typeof QUEUE)[keyof typeof QUEUE];

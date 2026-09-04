@@ -11,6 +11,7 @@ import { runCluster, type ClusterJob } from './stages/cluster';
 import { runRollup, type RollupJob } from './stages/rollup';
 import { runTrendTier, type TrendTierJob } from './stages/trend-tier';
 import { runMerge, type MergeJob } from './stages/merge';
+import { runElect, type ElectJob } from './stages/elect';
 import { registerSchedules, clearSchedules } from './scheduler';
 import { advanceChain, closeChain, CHAIN_ENABLED } from './chain';
 
@@ -30,6 +31,7 @@ import { advanceChain, closeChain, CHAIN_ENABLED } from './chain';
 //   RUN_CLUSTER=1        one cluster sweep            (optional CLUSTER_SET)
 //   RUN_ROLLUP=1         one rollup pass
 //   RUN_TREND_TIER=1     one trend-tier pass
+//   RUN_ELECT=1          one elect pass                (optional ELECT_SET)
 //   RUN_SCHEDULER=1      register repeatable schedules and self-drive (leave running)
 //   SCHED_CLEAR=1        remove the repeatable schedules and exit
 //
@@ -150,7 +152,26 @@ mergeWorker.on('failed', (job, err) =>
 );
 mergeWorker.on('error', (err) => console.error('[merge] error:', err));
 
-trendTierWorker.on('completed', (job) => console.log(`[trend-tier] completed: ${job.id}`));
+const electWorker = new Worker<ElectJob>(
+  QUEUE.elect,
+  (job) =>
+    // Cross-region: lines are elected from the live patch's master+ boards and
+    // every board is assigned into them — region is null, like the other
+    // full-sweep stages.
+    withJobTracking('elect', null, (ctx) => runElect(job.data, ctx)),
+  // Concurrency 1: one full re-election per patch; two at once would contend on
+  // the same comp_lines rows and the same match_participants stamps.
+  { connection: bullConnection, concurrency: 1, lockDuration: LONG_LOCK },
+);
+
+electWorker.on('completed', (job) => console.log(`[elect] completed: ${job.id}`));
+electWorker.on('failed', (job, err) => console.log(`[elect] failed: ${job?.id} — ${err.message}`));
+electWorker.on('error', (err) => console.error('[elect] error:', err));
+
+trendTierWorker.on('completed', (job) => {
+  console.log(`[trend-tier] completed: ${job.id}`);
+  void advanceChain(QUEUE.trendTier, job.data?.setNumber);
+});
 trendTierWorker.on('failed', (job, err) =>
   console.log(`[trend-tier] failed: ${job?.id} — ${err.message}`),
 );
@@ -293,6 +314,18 @@ if (process.env.RUN_TREND_TIER === '1' && allowDownstreamBoot) {
     .catch((e) => console.error('[worker] trend-tier enqueue failed:', e));
 }
 
+// Kick a single elect pass on boot, behind its own flag. Independent of the
+// other stages — it reads boards, not their output — so it needs no ordering
+// against cluster. Run with: RUN_ELECT=1 npm run worker
+if (process.env.RUN_ELECT === '1' && allowDownstreamBoot) {
+  const q = makeQueue(QUEUE.elect);
+  const setNumber = process.env.ELECT_SET ? Number(process.env.ELECT_SET) : undefined;
+  q.add('elect', { setNumber } satisfies ElectJob, { jobId: 'boot-elect', removeOnComplete: true })
+    .then(() => q.close())
+    .then(() => console.log('[worker] enqueued an elect pass'))
+    .catch((e) => console.error('[worker] elect enqueue failed:', e));
+}
+
 // Kick a single merge pass on boot, behind its own flag. Run cluster first.
 // Run with: RUN_MERGE=1 npm run worker
 if (process.env.RUN_MERGE === '1' && allowDownstreamBoot) {
@@ -316,6 +349,7 @@ async function shutdown(): Promise<void> {
     rollupWorker.close(),
     mergeWorker.close(),
     trendTierWorker.close(),
+    electWorker.close(),
   ]);
   await closeChain();
   process.exit(0);
@@ -324,8 +358,8 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 console.log(
-  '[worker] up — ladder-crawl + match-fetch + cluster + rollup + merge + trend-tier workers running' +
+  '[worker] up — ladder-crawl + match-fetch + cluster + rollup + merge + trend-tier + elect workers running' +
     (CHAIN_ENABLED
-      ? ' · chain: cluster → rollup → merge → trend-tier'
+      ? ' · chain: cluster → rollup → merge → trend-tier → elect'
       : ' · chain DISABLED (PIPELINE_CHAIN=false)'),
 );

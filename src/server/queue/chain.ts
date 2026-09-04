@@ -9,6 +9,7 @@ import { makeQueue, QUEUE, type QueueName } from './queues';
 //   rollup   → DELETEs and rebuilds comp_stats + bucket_totals from those stamps
 //   merge    → reads comp_stats, writes comps.meta_comp
 //   trend-tier → reads comp_stats, writes comp_stat_trends + tier_list_entries
+//   elect      → reads boards, writes comp_lines + line_stats + line_id
 //
 // Running them on separate cadences let them interleave, and two of those
 // interleavings corrupt what the read path serves: a rollup that starts mid-
@@ -24,6 +25,12 @@ const NEXT: Partial<Record<QueueName, QueueName>> = {
   [QUEUE.cluster]: QUEUE.rollup,
   [QUEUE.rollup]: QUEUE.merge,
   [QUEUE.merge]: QUEUE.trendTier,
+  // ELECT RUNS LAST, ON PURPOSE, while it is the new and untrusted model. It
+  // reads boards and writes only its own tables, so nothing downstream needs it
+  // — and putting it at the tail means a failure in it cannot stop the stats the
+  // site actually serves from updating. It moves to the front of the chain when
+  // it becomes the primary model and rollup starts depending on its stamps.
+  [QUEUE.trendTier]: QUEUE.elect,
 };
 
 /** The stage the scheduler kicks; everything downstream follows from it. */
