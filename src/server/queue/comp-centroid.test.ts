@@ -371,10 +371,38 @@ test('the full name is trait + two carries', () => {
   ];
   const parts = nameCentroid(c, board, items, statics());
   assert.deepEqual(parts.carryIds, ['Malphite', 'Soraka']);
+  assert.equal(parts.leadCarry, 'Malphite'); // 95% itemised, against Soraka's 70%
   assert.equal(renderName(parts, statics()), 'Executioner Malphite Soraka');
 });
 
-const named = (traitId: string | null, ...carryIds: string[]) => ({ traitId, carryIds });
+const named = (traitId: string | null, ...carryIds: string[]) => ({
+  traitId,
+  carryIds,
+  leadCarry: carryIds[0] ?? null,
+});
+
+test('a collision cuts the WEAKER carry, never the lead one', () => {
+  // "Sprykin Veigar Rek'Sai" cut to "Sprykin Rek'Sai Sett" and dropped Veigar,
+  // who is the line's carry — both are 1-cost, so the canonical render put
+  // Rek'Sai first and dropping the last one dropped the wrong unit. The lead is
+  // the most consistently itemised carry, whatever order the name renders in.
+  const c = centroid(profile(['Yunara', 1], ['Karma', 1], ['Ahri', 1], ['Kennen', 1]));
+  const items: ItemisationRate[] = [
+    { characterId: 'Karma', rate: 0.91, boards: 120 }, // 1-cost, renders second
+    { characterId: 'Yunara', rate: 0.81, boards: 100 }, // 2-cost, renders first
+  ];
+  const parts = nameCentroid(c, ['Yunara', 'Karma', 'Ahri', 'Kennen'], items, statics());
+  assert.deepEqual(parts.carryIds, ['Yunara', 'Karma']);
+  assert.equal(parts.leadCarry, 'Karma');
+
+  const other = centroid(profile(['Yunara', 1], ['Karma', 1], ['Alune', 1]), 5, 1);
+  const out = resolveNameCollisions(
+    [{ ...parts }, { ...parts, carryIds: [...parts.carryIds] }],
+    [c, other],
+    statics(),
+  );
+  assert.ok(out.every((n) => n.split(' ')[1] === 'Karma'), out.join(' / '));
+});
 
 test('colliding names SUBSTITUTE the shared carry, keeping the two-unit shape', () => {
   // The colliders share both carries by definition — that is what collided — so

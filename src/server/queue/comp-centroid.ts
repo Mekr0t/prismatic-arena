@@ -514,32 +514,40 @@ export function nameCarries(
   statics: NameStatics,
   limit = 2,
 ): string[] {
+  return renderOrder(pickCarries(centroid, itemisation, limit), statics);
+}
+
+/** The carries in CLAIM order — strongest first. Internal, because it is not
+ *  how a name reads; it is how a name is cut down when one carry has to go. */
+function pickCarries(
+  centroid: Centroid,
+  itemisation: readonly ItemisationRate[],
+  limit = 2,
+): string[] {
   const core = coreUnits(centroid);
-  const picked = itemisation
+  return itemisation
     .filter((i) => core.has(i.characterId))
     .sort((a, b) => b.rate - a.rate || b.boards - a.boards || (a.characterId < b.characterId ? -1 : 1))
-    .slice(0, limit);
+    .slice(0, limit)
+    .map((i) => i.characterId);
+}
 
-  // PICKED by itemisation rate, ORDERED canonically. Those are different jobs:
-  // rate says which units carry the line, but letting it also decide word order
-  // makes two lines with the same carries read as different names — observed as
-  // "Solar Akali Camille" beside "Solar Camille Akali", which the collision
-  // resolver never saw because the strings differed. Cost descending also
-  // matches how a player would say it.
-  //
-  // Character IDS, not display names: two units in a set can share a display
-  // name (an AP and an AD Nidalee), and the caller needs the id to draw a
-  // portrait. Rendering is renderName's job.
-  return picked
+/**
+ * PICKED by itemisation rate, ORDERED canonically. Those are different jobs:
+ * rate says which units carry the line, but letting it also decide word order
+ * makes two lines with the same carries read as different names — observed as
+ * "Solar Akali Camille" beside "Solar Camille Akali", which the collision
+ * resolver never saw because the strings differed. Cost descending also matches
+ * how a player would say it.
+ */
+function renderOrder(carryIds: readonly string[], statics: NameStatics): string[] {
+  return carryIds
     .slice()
     .sort(
       (a, b) =>
-        (statics.unitCosts?.get(b.characterId) ?? 0) - (statics.unitCosts?.get(a.characterId) ?? 0) ||
-        (statics.unitNames.get(a.characterId) ?? a.characterId).localeCompare(
-          statics.unitNames.get(b.characterId) ?? b.characterId,
-        ),
-    )
-    .map((i) => i.characterId);
+        (statics.unitCosts?.get(b) ?? 0) - (statics.unitCosts?.get(a) ?? 0) ||
+        (statics.unitNames.get(a) ?? a).localeCompare(statics.unitNames.get(b) ?? b),
+    );
 }
 
 /** A line's name before it is a string: the headline trait and the carries, by
@@ -547,7 +555,13 @@ export function nameCarries(
  *  a name from its parts rather than editing the string. */
 export interface CentroidName {
   traitId: string | null;
+  /** Canonical render order (cost descending). */
   carryIds: string[];
+  /** The carry with the strongest claim on the line — the most consistently
+   *  itemised one. Kept when a collision forces the name down to one carry, so
+   *  `Sprykin Veigar Rek'Sai` cuts to the 91%-itemised Veigar rather than to
+   *  whichever of the two an alphabetical tiebreak happened to render first. */
+  leadCarry: string | null;
 }
 
 /** `<trait> <carry> <carry>`, e.g. "Executioner Malphite Ahri" — named off the
@@ -559,8 +573,13 @@ export function nameCentroid(
   itemisation: readonly ItemisationRate[],
   statics: NameStatics,
 ): CentroidName {
-  const carryIds = nameCarries(centroid, itemisation, statics);
-  return { traitId: headlineTrait(board, statics, carryIds), carryIds };
+  const picked = pickCarries(centroid, itemisation);
+  const carryIds = renderOrder(picked, statics);
+  return {
+    traitId: headlineTrait(board, statics, carryIds),
+    carryIds,
+    leadCarry: picked[0] ?? null,
+  };
 }
 
 export function renderName(name: CentroidName, statics: NameStatics): string {
@@ -668,14 +687,15 @@ export function resolveNameCollisions(
         // repeating it would say nothing. Either way there is nothing honest to
         // add, and a shared name is the truthful outcome.
         if (pick === null || names[i].carryIds.includes(pick)) continue;
+        const lead = names[i].leadCarry;
         const kept =
           mode === 'substitute'
-            ? names[i].carryIds.slice(0, Math.max(1, names[i].carryIds.length - 1))
+            ? names[i].carryIds.filter((id) => id === (lead ?? names[i].carryIds[0]))
             : names[i].carryIds;
         // The differentiator goes LAST, not into cost order: it is a qualifier
         // on the line the first carry names, and reordering it to the front
         // ("Sprykin Sett Veigar") would bury the carry the line is about.
-        out[i] = renderName({ traitId: names[i].traitId, carryIds: [...kept, pick] }, statics);
+        out[i] = renderName({ ...names[i], carryIds: [...kept, pick] }, statics);
       }
     }
   }
