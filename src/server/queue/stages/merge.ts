@@ -476,16 +476,26 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
     // rows (pg makes a dead tuple even for same-value updates).
     await client.query('BEGIN');
     try {
+      // NOT EXISTS over a CTE, not `id NOT IN (SELECT unnest(array))`.
+      //
+      // The NOT IN form is what made this stage look algorithmically slow: with
+      // ~76,000 assigned ids it was measured at 651 s ALONE, on a freshly
+      // vacuumed table with no lock contention — Postgres cannot turn a NOT IN
+      // over a large array into a hash anti-join (it has to preserve NULL
+      // semantics), so it re-evaluated the set per candidate row. The CTE lets
+      // it hash once and anti-join, which is the same answer in seconds.
+      //
+      // The scope MUST match the run: a clear wider than the merge nulls the
+      // labels of every comp it did not look at, so narrowing the merge to one
+      // set while clearing all of them would wipe a frozen set's labels
+      // wholesale, and the tier list for those patches with them.
       await client.query(
-        `UPDATE comps
+        `WITH assigned AS (SELECT unnest($2::int[]) AS id)
+         UPDATE comps c
             SET meta_comp = NULL
-          WHERE ($1::int IS NULL OR set_number = $1)
-            AND meta_comp IS NOT NULL
-            AND id NOT IN (SELECT unnest($2::int[]))`,
-        // MUST be the same scope the merge ran over. A clear wider than the
-        // run nulls the labels of every comp it did not look at — narrowing the
-        // merge to one set while clearing all of them would wipe the frozen
-        // set's labels wholesale, and the tier list with them.
+          WHERE ($1::int IS NULL OR c.set_number = $1)
+            AND c.meta_comp IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM assigned a WHERE a.id = c.id)`,
         [setNumber ?? null, ids],
       );
       if (ids.length > 0) {
