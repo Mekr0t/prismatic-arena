@@ -17,6 +17,7 @@
 // and to the ranked queue. Everything is derived on read; no new tables.
 
 import { unstable_cache } from 'next/cache';
+import { getLineDetail } from './comp-line-detail-service';
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
 import { COMPONENT_ITEMS } from './item-filters';
@@ -741,20 +742,26 @@ export async function getCompDetail(
 
 const DETAIL_CACHE_TTL = num(process.env.COMPS_CACHE_TTL_S, 300);
 
+/** Which model serves this page. See comps-service for why it is a flag. */
+const COMPS_MODEL = process.env.COMPS_MODEL === 'centroid' ? 'centroid' : 'legacy';
+
 const cachedCompDetail = unstable_cache(
   (
+    model: string,
     groupKey: string,
     patchId: number | null,
     region: string | null,
     rankBucket: string | null,
     variant: string | null,
-  ): Promise<CompDetailVM | null> =>
-    getCompDetail(groupKey, {
+  ): Promise<CompDetailVM | null> => {
+    const q: TierListQuery = {
       patchId: patchId ?? undefined,
       region: region ?? undefined,
       rankBucket: rankBucket ?? undefined,
       variant: variant ?? undefined,
-    }),
+    };
+    return model === 'centroid' ? getLineDetail(groupKey, q) : getCompDetail(groupKey, q);
+  },
   ['comps:detail'],
   { revalidate: DETAIL_CACHE_TTL, tags: ['comps'] },
 );
@@ -765,6 +772,7 @@ export function getCompDetailCached(
   q: TierListQuery = {},
 ): Promise<CompDetailVM | null> {
   return cachedCompDetail(
+    COMPS_MODEL,
     groupKey,
     q.patchId ?? null,
     q.region ?? null,
