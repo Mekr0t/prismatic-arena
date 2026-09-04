@@ -17,6 +17,7 @@ import {
   nameCarries,
   nameCentroid,
   profileScore,
+  renderName,
   resolveNameCollisions,
   seedProfiles,
   traitCounts,
@@ -290,34 +291,42 @@ test('a marker trait is recognised by its single one-unit breakpoint', () => {
 
 test('a marker trait NEVER names a line, however high its style', () => {
   // The reported bug: four different Malphite lines all called "Monolith".
-  const c = centroid(
-    profile(['Malphite', 1], ['Azir', 1], ['Kennen', 0.73], ['Soraka', 0.6], ['Yunara', 0.4]),
-  );
-  assert.equal(headlineTrait(c, statics()), 'Executioner');
+  assert.equal(headlineTrait(['Malphite', 'Azir', 'Kennen', 'Soraka'], statics()), 'Executioner');
 });
 
-test('trait counts come from RATES, so flex units count toward a vertical', () => {
-  const c = centroid(profile(['Azir', 1], ['Kennen', 0.73], ['Soraka', 0.6], ['Yunara', 0.4]));
-  const counts = traitCounts(c, statics());
-  assert.ok(Math.abs(counts.get('Executioner')! - 2.73) < 1e-9);
-  // Counting only core units would have seen a single Executioner and named the
-  // line after something else entirely.
-  assert.equal(headlineTrait(c, statics()), 'Executioner');
+test('trait counts come from the BOARD, so the chips can never contradict the name', () => {
+  // Summing the profile's rates instead let a line hold four Sprykin at
+  // 1.00/0.97/0.37/0.30, round to three, and take the name — while the board it
+  // renders fields two and activates no Sprykin at all.
+  const counts = traitCounts(['Azir', 'Kennen', 'Soraka'], statics());
+  assert.equal(counts.get('Executioner'), 3);
+  assert.equal(headlineTrait(['Azir', 'Kennen', 'Soraka'], statics()), 'Executioner');
+  // Two Executioners on the board is a real breakpoint; one is not a name.
+  assert.equal(headlineTrait(['Malphite', 'Azir'], statics()), 'Blackthorn');
 });
 
 test('a higher breakpoint beats a lower one, and 3/3 beats 2/2 at equal style', () => {
   const s = statics();
-  const four = centroid(profile(['Azir', 1], ['Yunara', 1], ['Soraka', 1], ['Kennen', 1]));
-  assert.equal(headlineTrait(four, s), 'Executioner'); // style 5 at 4 units
-  const blossom = centroid(profile(['Ahri', 1], ['Karma', 1], ['Yunara', 1]));
+  assert.equal(headlineTrait(['Azir', 'Yunara', 'Soraka', 'Kennen'], s), 'Executioner'); // style 5 at 4
   // Blossom 3/3 (style 1) against Spellweaver 2/2 (style 1): more units wins.
-  assert.equal(headlineTrait(blossom, s), 'Blossom');
+  assert.equal(headlineTrait(['Ahri', 'Karma', 'Yunara'], s), 'Blossom');
 });
 
-test('a line with no non-marker trait active gets no trait in its name', () => {
+test('an exact tie is broken by a trait one of the named carries has', () => {
+  // Blackthorn and Spellweaver both sit at style 1, both at a 2-unit
+  // breakpoint, both with two units on the board — a board with no vertical at
+  // all, where the id fallback is a coin flip. Naming the trait a carry shares
+  // at least reads like a sentence.
+  const s = statics();
+  const board = ['Malphite', 'Azir', 'Alune', 'Karma'];
+  assert.equal(headlineTrait(board, s), 'Blackthorn'); // no carries: id order
+  assert.equal(headlineTrait(board, s, ['Alune']), 'Spellweaver');
+});
+
+test('a line whose board activates no non-marker trait gets no trait in its name', () => {
   const c = centroid(profile(['Malphite', 1], ['Alune', 1]));
-  assert.equal(headlineTrait(c, statics()), null);
-  assert.equal(nameCentroid(c, [], statics()), '');
+  assert.equal(headlineTrait(['Malphite', 'Alune'], statics()), null);
+  assert.equal(renderName(nameCentroid(c, ['Malphite', 'Alune'], [], statics()), statics()), '');
 });
 
 test('carries are drawn from CORE units only', () => {
@@ -354,26 +363,59 @@ test('carries render in a CANONICAL order, whatever order they were picked in', 
 
 test('the full name is trait + two carries', () => {
   const c = centroid(profile(['Malphite', 1], ['Azir', 1], ['Soraka', 0.9], ['Kennen', 0.85]));
+  const board = ['Malphite', 'Azir', 'Soraka', 'Kennen'];
   const items: ItemisationRate[] = [
     { characterId: 'Malphite', rate: 0.95, boards: 30 },
     { characterId: 'Soraka', rate: 0.7, boards: 20 },
     { characterId: 'Azir', rate: 0.1, boards: 3 },
   ];
-  assert.equal(nameCentroid(c, items, statics()), 'Executioner Malphite Soraka');
+  const parts = nameCentroid(c, board, items, statics());
+  assert.deepEqual(parts.carryIds, ['Malphite', 'Soraka']);
+  assert.equal(renderName(parts, statics()), 'Executioner Malphite Soraka');
 });
 
-test('colliding names are separated by their distinguishing core unit', () => {
+const named = (traitId: string | null, ...carryIds: string[]) => ({ traitId, carryIds });
+
+test('colliding names SUBSTITUTE the shared carry, keeping the two-unit shape', () => {
+  // The colliders share both carries by definition — that is what collided — so
+  // the second one carries no information here and the differentiator takes its
+  // slot. Appending instead produced "Sprykin Veigar Rek'Sai Sett": a name in a
+  // shape the scheme does not promise.
   const a = centroid(profile(['Malphite', 1], ['Ahri', 1], ['Azir', 1], ['Yunara', 0.9]), 34, 0);
   const b = centroid(profile(['Malphite', 1], ['Ahri', 1], ['Azir', 1], ['Alune', 1]), 15, 1);
-  const resolved = resolveNameCollisions(['X Malphite Ahri', 'X Malphite Ahri'], [a, b], statics());
-  assert.equal(resolved[0], 'X Malphite Ahri Yunara');
-  assert.equal(resolved[1], 'X Malphite Ahri Alune');
+  const resolved = resolveNameCollisions(
+    [named('X', 'Malphite', 'Ahri'), named('X', 'Malphite', 'Ahri')],
+    [a, b],
+    statics(),
+  );
+  assert.equal(resolved[0], 'X Malphite Yunara');
+  assert.equal(resolved[1], 'X Malphite Alune');
 });
 
 test('a name that does not collide is left exactly as it was', () => {
   const a = centroid(profile(['Malphite', 1]), 10, 0);
   const b = centroid(profile(['Ahri', 1]), 9, 1);
-  assert.deepEqual(resolveNameCollisions(['One', 'Two'], [a, b], statics()), ['One', 'Two']);
+  assert.deepEqual(
+    resolveNameCollisions([named('One'), named('Two')], [a, b], statics()),
+    ['One', 'Two'],
+  );
+});
+
+test('a substituted name that collides AGAIN falls back to appending', () => {
+  // Two lines whose differentiators come from different groups can land on the
+  // same pair. Three units is worse than two; two lines sharing a name in a list
+  // is worse than both.
+  const a = centroid(profile(['Malphite', 1], ['Ahri', 1], ['Yunara', 1]), 40, 0);
+  const b = centroid(profile(['Malphite', 1], ['Yunara', 1], ['Kennen', 1]), 30, 1);
+  // Both render "X Malphite Yunara" already: a's carries are Malphite+Ahri and
+  // b's are Malphite+Yunara, so substitution hands a the name b was born with.
+  const out = resolveNameCollisions(
+    [named('X', 'Malphite', 'Ahri'), named('X', 'Malphite', 'Yunara')],
+    [a, b],
+    statics(),
+  );
+  assert.notEqual(out[0], out[1]);
+  assert.ok(out.every((n) => n.startsWith('X Malphite')));
 });
 
 test('identical cores fall through to the FLEX band for a differentiator', () => {
@@ -391,7 +433,7 @@ test('identical cores fall through to the FLEX band for a differentiator', () =>
     190,
     1,
   );
-  const out = resolveNameCollisions(['N', 'N'], [a, b], statics());
+  const out = resolveNameCollisions([named('N'), named('N')], [a, b], statics());
   assert.equal(out[0], 'N Yunara'); // highest-rate unit b does not field at all
   assert.equal(out[1], 'N Karma');
   assert.notEqual(out[0], out[1]);
@@ -402,7 +444,7 @@ test('a core-unique unit still wins over a higher-rate flex one', () => {
   // always fields identifies it better than a coin-flip slot.
   const a = centroid(profile(['Malphite', 1], ['Kennen', 0.95], ['Yunara', 0.6]), 50, 0);
   const b = centroid(profile(['Malphite', 1], ['Ahri', 0.9], ['Karma', 0.6]), 40, 1);
-  const out = resolveNameCollisions(['N', 'N'], [a, b], statics());
+  const out = resolveNameCollisions([named('N'), named('N')], [a, b], statics());
   assert.equal(out[0], 'N Kennen'); // core, not the 60% Yunara
   assert.equal(out[1], 'N Ahri');
 });
@@ -410,13 +452,25 @@ test('a core-unique unit still wins over a higher-rate flex one', () => {
 test('truly indistinguishable profiles are left alone rather than given a fake difference', () => {
   const a = centroid(profile(['Malphite', 1], ['Ahri', 1]), 10, 0);
   const b = centroid(profile(['Malphite', 1], ['Ahri', 1]), 9, 1);
-  assert.deepEqual(resolveNameCollisions(['N', 'N'], [a, b], statics()), ['N', 'N']);
+  assert.deepEqual(resolveNameCollisions([named('N'), named('N')], [a, b], statics()), ['N', 'N']);
+});
+
+test('a differentiator the line already carries is not repeated in its name', () => {
+  const a = centroid(profile(['Malphite', 1], ['Kennen', 1]), 10, 0);
+  const b = centroid(profile(['Malphite', 1], ['Ahri', 1]), 9, 1);
+  const out = resolveNameCollisions(
+    [named('N', 'Kennen'), named('N', 'Ahri')],
+    [a, b],
+    statics(),
+  );
+  // Both already render distinctly; nothing to resolve, and no "N Kennen Kennen".
+  assert.deepEqual(out, ['N Kennen', 'N Ahri']);
 });
 
 test('collision resolution prefers the highest-cost distinguishing unit', () => {
   const a = centroid(profile(['Malphite', 1], ['Karma', 1], ['Kennen', 1]), 10, 0);
   const b = centroid(profile(['Malphite', 1], ['Ahri', 1]), 9, 1);
-  const out = resolveNameCollisions(['N', 'N'], [a, b], statics());
+  const out = resolveNameCollisions([named('N'), named('N')], [a, b], statics());
   assert.equal(out[0], 'N Kennen'); // Kennen 5c over Karma 1c
   assert.equal(out[1], 'N Ahri');
 });

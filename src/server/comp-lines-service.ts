@@ -94,7 +94,7 @@ export function lineIdFromKey(key: string): number | null {
  *  them, and the example board's trait chips have to be derived from the board
  *  itself rather than stored: the board is the authority on what a line fields,
  *  and a stored trait list could disagree with it after a re-election. ~90 rows. */
-async function unitTraitMap(setNumber: number): Promise<Map<string, string[]>> {
+export async function unitTraitMap(setNumber: number): Promise<Map<string, string[]>> {
   const rows = await query<{ character_id: string; trait_ids: string[] | null }>(
     `SELECT character_id, trait_ids FROM units WHERE set_number = $1`,
     [setNumber],
@@ -102,7 +102,7 @@ async function unitTraitMap(setNumber: number): Promise<Map<string, string[]>> {
   return new Map(rows.map((r) => [r.character_id, r.trait_ids ?? []]));
 }
 
-function buildExampleTeam(
+export function buildExampleTeam(
   raw: unknown,
   cat: Awaited<ReturnType<typeof getCatalog>>,
   unitTraits: Map<string, string[]>,

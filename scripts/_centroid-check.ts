@@ -8,11 +8,13 @@ import {
   MIN_SEPARATION,
   SEED_COUNT,
   assignBoard,
+  boardUnits,
   convergeCentroids,
   coreUnits,
   groupBoards,
   listableCentroids,
   nameCentroid,
+  renderName,
   resolveNameCollisions,
   type CentroidBoard,
   type ItemisationRate,
@@ -192,8 +194,12 @@ async function main() {
   }
 
   const listed = listableCentroids(res.centroids);
-  const rawNames = res.centroids.map((c) => nameCentroid(c, itemisationFor(members.get(c.index) ?? []), statics));
-  const names = resolveNameCollisions(rawNames, res.centroids, statics);
+  // Named off the canonical board, exactly as elect does — the headline trait
+  // has to be one the rendered board activates.
+  const parts = res.centroids.map((c) =>
+    nameCentroid(c, boardUnits(c), itemisationFor(members.get(c.index) ?? []), statics),
+  );
+  const names = resolveNameCollisions(parts, res.centroids, statics);
 
   const distinct = new Set(names).size;
   const listedNames = new Set(listed.map((c) => names[c.index]));
@@ -246,7 +252,7 @@ async function main() {
     for (const i of idxs) {
       const c = res.centroids.find((x) => x.index === i)!;
       console.log(
-        `    #${i} ${c.boards} boards  raw="${rawNames[i]}"  core: ${[...coreUnits(c)].map(shortId).join(', ')}`,
+        `    #${i} ${c.boards} boards  raw="${renderName(parts[i], statics)}"  core: ${[...coreUnits(c)].map(shortId).join(', ')}`,
       );
     }
   }

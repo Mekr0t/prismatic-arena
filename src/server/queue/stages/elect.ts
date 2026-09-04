@@ -5,15 +5,15 @@ import { PLATFORMS, superRegionForPlatform } from '@/config/regions';
 import { tiersAtOrAbove } from '@/config/rank-buckets';
 import { MIN_BOARD_UNITS, isEmblemItem } from '../comp-signature';
 import {
-  CORE_RATE,
+  BOARD_ITEM_RATE,
+  BOARD_MIN_RATE,
+  BOARD_STAR_RATE,
   MIN_SEPARATION,
   assignBoard,
   convergeCentroids,
   coreUnits,
   groupBoards,
   jaccard,
-  headlineTrait,
-  nameCarries,
   nameCentroid,
   resolveNameCollisions,
   type Centroid,
@@ -81,14 +81,6 @@ interface ScannedBoard {
   detail?: Map<string, { star: number; items: string[] }>;
 }
 
-/** A unit is shown at 3★ / with items when that is the usual outcome for the
- *  players who FIELD it. The denominator is deliberately the boards that fielded
- *  the unit, not every board in the line. */
-const EX_STAR_MIN_RATE = Number(process.env.ELECT_EX_STAR_MIN_RATE ?? 0.5);
-const EX_ITEM_MIN_RATE = Number(process.env.ELECT_EX_ITEM_MIN_RATE ?? 0.5);
-/** Units below this appearance rate are left off the example board — it is meant
- *  to be the typical board, not the union of everything anyone played. */
-const EX_UNIT_MIN_RATE = Number(process.env.ELECT_EX_UNIT_MIN_RATE ?? 0.5);
 
 interface ExampleUnit {
   characterId: string;
@@ -108,7 +100,7 @@ interface ExampleUnit {
 function buildExampleBoard(centroid: Centroid, members: readonly ScannedBoard[]): ExampleUnit[] {
   const out: ExampleUnit[] = [];
   for (const { characterId, rate } of centroid.units) {
-    if (rate < EX_UNIT_MIN_RATE) continue;
+    if (rate < BOARD_MIN_RATE) continue;
 
     let fielded = 0;
     let threeStar = 0;
@@ -131,13 +123,13 @@ function buildExampleBoard(centroid: Centroid, members: readonly ScannedBoard[])
     if (fielded === 0) continue;
 
     let items: string[] = [];
-    if (itemised / fielded >= EX_ITEM_MIN_RATE && buildTally.size > 0) {
+    if (itemised / fielded >= BOARD_ITEM_RATE && buildTally.size > 0) {
       items = [...buildTally.values()].sort((a, b) => b.n - a.n || (a.items[0] < b.items[0] ? -1 : 1))[0].items;
     }
     out.push({
       characterId,
       rate,
-      star: threeStar / fielded >= EX_STAR_MIN_RATE ? 3 : 1,
+      star: threeStar / fielded >= BOARD_STAR_RATE ? 3 : 1,
       items,
     });
   }
@@ -402,27 +394,30 @@ export async function runElect(job: ElectJob, ctx: JobContext): Promise<void> {
       else electedMembers.set(hit.index, [b]);
       electedCounts.set(hit.index, (electedCounts.get(hit.index) ?? 0) + 1);
     }
-    const rawNames = res.centroids.map((c) =>
-      nameCentroid(c, itemisationFor(electedMembers.get(c.index) ?? []), statics),
-    );
-    const names = resolveNameCollisions(rawNames, res.centroids, statics);
 
-    // The name's own components, stored so the read path renders exactly what the
-    // line is called rather than re-deriving them and risking disagreement.
-    const display = res.centroids.map((c) => {
-      const members = electedMembers.get(c.index) ?? [];
-      const core = coreUnits(c, CORE_RATE);
-      const trait = headlineTrait(c, statics);
-      const carryNames = nameCarries(c, itemisationFor(members), statics);
-      // nameCarries returns display names; the read path needs ids for portraits.
-      const byName = new Map<string, string>();
-      for (const u of core) byName.set(statics.unitNames.get(u) ?? u, u);
-      return {
-        carries: carryNames.map((nm) => byName.get(nm) ?? nm),
-        traitId: trait ? ([...statics.traitNames].find(([, v]) => v === trait)?.[0] ?? null) : null,
-        exampleBoard: JSON.stringify(buildExampleBoard(c, members)),
-      };
-    });
+    // The example board is built BEFORE the name, because the name is read off
+    // it: the headline trait has to be one the rendered board actually
+    // activates, or the chips under the title contradict the title.
+    const exampleBoards = res.centroids.map((c) =>
+      buildExampleBoard(c, electedMembers.get(c.index) ?? []),
+    );
+    const parts = res.centroids.map((c, i) =>
+      nameCentroid(
+        c,
+        exampleBoards[i].map((u) => u.characterId),
+        itemisationFor(electedMembers.get(c.index) ?? []),
+        statics,
+      ),
+    );
+    const names = resolveNameCollisions(parts, res.centroids, statics);
+
+    // The name's own components, stored so the read path renders exactly what
+    // the line is called rather than re-deriving them and risking disagreement.
+    const display = res.centroids.map((_, i) => ({
+      carries: parts[i].carryIds,
+      traitId: parts[i].traitId,
+      exampleBoard: JSON.stringify(exampleBoards[i]),
+    }));
 
     // 3 ─ Assign EVERY board on the patch, at every tier, into the frozen lines.
     const all = await scanBoards(client, patchId, costs, null, ctx);

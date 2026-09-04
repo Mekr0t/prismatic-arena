@@ -1,11 +1,11 @@
 import { query } from '@/lib/db';
 import { getCatalog } from './static-data';
-import { styleAtUnits } from './comps-example-team';
 import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 import { regionCodesFor } from '@/config/regions';
 import { TIER_ORDER, tiersAtOrAbove } from '@/config/rank-buckets';
 import { computeMetrics, tierCutoffs, tierForScore } from './queue/comp-stats-math';
-import { lineIdFromKey, lineKey } from './comp-lines-service';
+import { BOARD_ITEM_RATE } from './queue/comp-centroid';
+import { buildExampleTeam, lineIdFromKey, lineKey, unitTraitMap } from './comp-lines-service';
 import type {
   CompDetailVM,
   DetailBoardVM,
@@ -84,6 +84,7 @@ export async function getLineDetail(
   if (lineId === null) return null;
 
   const cat = await getCatalog();
+  const unitTraits = await unitTraitMap(cat.setNumber);
   const lines = await query<{
     id: number;
     patch_id: number;
@@ -92,9 +93,11 @@ export async function getLineDetail(
     carries: string[];
     trait_id: string | null;
     core_units: string[];
+    example_board: unknown;
     patch: string;
   }>(
-    `SELECT cl.id, cl.patch_id, cl.name, cl.slug, cl.carries, cl.trait_id, cl.core_units, p.patch
+    `SELECT cl.id, cl.patch_id, cl.name, cl.slug, cl.carries, cl.trait_id, cl.core_units,
+            cl.example_board, p.patch
        FROM comp_lines cl JOIN patches p ON p.id = cl.patch_id
       WHERE cl.id = $1`,
     [lineId],
@@ -145,13 +148,16 @@ export async function getLineDetail(
       // a duplicate copy does not inflate a unit's sample.
       query<{
         character_id: string; boards: number; placement_sum: string;
-        top4: number; wins: number; modal_star: number;
+        top4: number; wins: number; modal_star: number; itemised: number;
       }>(
         `SELECT pu.character_id,
                 COUNT(DISTINCT mp.id)::int boards,
                 SUM(mp.placement)::text placement_sum,
                 COUNT(DISTINCT mp.id) FILTER (WHERE mp.placement <= 4)::int top4,
                 COUNT(DISTINCT mp.id) FILTER (WHERE mp.placement = 1)::int wins,
+                COUNT(DISTINCT mp.id) FILTER (
+                  WHERE (SELECT COUNT(*) FROM unnest(pu.item_ids) x
+                          WHERE x !~* 'Emblem') >= 2)::int itemised,
                 MODE() WITHIN GROUP (ORDER BY pu.star_tier)::int modal_star
            FROM match_participants mp
            JOIN matches m ON m.match_id = mp.match_id
@@ -224,21 +230,35 @@ export async function getLineDetail(
            FROM per_board GROUP BY 1 ORDER BY 2 DESC LIMIT 12`,
         [lineId, line.patch_id, tiers, codes, RANKED_TFT_QUEUE_ID],
       ),
-      // BUILDS, for the line's carries only. Item order is normalised so the
-      // same three items in a different slot order are one build, not three.
+      // BUILDS for EVERY unit the line itemises, not only the two the name
+      // mentions. The tier list draws items from the stored canonical board,
+      // which itemises any unit whose own players build one; asking here only
+      // about `carries` showed two itemised units beside the list's five.
+      //
+      // Emblems are stripped before the >= 2 test, mirroring `isEmblemItem` —
+      // a worn emblem is a trait decision, not a build. The window keeps the
+      // four biggest sets per unit so widening the scope cannot return a row
+      // per exotic three-item combination in the field.
       query<{ character_id: string; items: string[]; boards: number; placement_sum: string }>(
-        `SELECT pu.character_id,
-                (SELECT array_agg(x ORDER BY x) FROM unnest(pu.item_ids) x) AS items,
-                COUNT(*)::int boards, SUM(mp.placement)::text placement_sum
-           FROM match_participants mp
-           JOIN matches m ON m.match_id = mp.match_id
-           JOIN participant_units pu ON pu.participant_id = mp.id
-          WHERE mp.line_id = $1 AND m.patch_id = $2 AND m.region = ANY($4::text[])
-            AND mp.tier = ANY($3::text[]) AND m.queue_id = $5
-            AND pu.character_id = ANY($6::text[])
-            AND COALESCE(array_length(pu.item_ids, 1), 0) >= 2
-          GROUP BY 1,2 ORDER BY 3 DESC`,
-        [lineId, line.patch_id, tiers, codes, RANKED_TFT_QUEUE_ID, line.carries],
+        `WITH built AS (
+           SELECT pu.character_id, mp.placement,
+                  (SELECT array_agg(x ORDER BY x) FROM unnest(pu.item_ids) x
+                    WHERE x !~* 'Emblem') AS items
+             FROM match_participants mp
+             JOIN matches m ON m.match_id = mp.match_id
+             JOIN participant_units pu ON pu.participant_id = mp.id
+            WHERE mp.line_id = $1 AND m.patch_id = $2 AND m.region = ANY($4::text[])
+              AND mp.tier = ANY($3::text[]) AND m.queue_id = $5
+         ), sets AS (
+           SELECT character_id, items, COUNT(*)::int boards, SUM(placement)::text placement_sum
+             FROM built WHERE COALESCE(array_length(items, 1), 0) >= 2
+            GROUP BY 1, 2
+         )
+         SELECT character_id, items, boards, placement_sum FROM (
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY character_id
+                                        ORDER BY boards DESC, items) rn FROM sets
+         ) t WHERE rn <= 4 ORDER BY boards DESC`,
+        [lineId, line.patch_id, tiers, codes, RANKED_TFT_QUEUE_ID],
       ),
       query<{ units: string[]; boards: number; placement_sum: string }>(
         `WITH per_board AS (
@@ -271,23 +291,26 @@ export async function getLineDetail(
     perStar.set(r.character_id, arr);
   }
 
-  const buildsByCarry = new Map<string, ExampleItemVM[][]>();
-  const carrySets = new Map<string, { items: string[]; boards: number; avg: number }[]>();
+  const itemSets = new Map<string, { items: string[]; boards: number; avg: number }[]>();
   for (const r of buildRows) {
-    const arr = carrySets.get(r.character_id) ?? [];
+    const arr = itemSets.get(r.character_id) ?? [];
     arr.push({ items: r.items ?? [], boards: r.boards, avg: numOr(r.placement_sum) / (r.boards || 1) });
-    carrySets.set(r.character_id, arr);
+    itemSets.set(r.character_id, arr);
   }
-  void buildsByCarry;
 
   const modalItemsFor = (id: string): ExampleItemVM[] => {
-    const sets = carrySets.get(id);
+    const sets = itemSets.get(id);
     if (!sets || sets.length === 0) return [];
     return sets[0].items.map((it) => {
       const meta = cat.item(it);
       return { itemId: it, name: meta.name, iconUrl: meta.iconUrl };
     });
   };
+
+  /** Share of the boards that FIELDED a unit on which its player built one. */
+  const itemRate = (r: { boards: number; itemised: number }) =>
+    r.boards > 0 ? r.itemised / r.boards : 0;
+  const itemRates = new Map(unitRows.map((r) => [r.character_id, itemRate(r)]));
 
   const units: DetailUnitVM[] = unitRows.map((r) => {
     const avg = numOr(r.placement_sum) / (r.boards || 1);
@@ -310,7 +333,10 @@ export async function getLineDetail(
         .filter((s) => s.boards >= 5)
         .sort((a, b) => b.star - a.star)
         .map((s) => ({ star: s.star, boards: s.boards, avgPlacement: s.avg })),
-      items: line.carries.includes(r.character_id) ? modalItemsFor(r.character_id) : [],
+      // A unit shows its build when its own players usually build one — the
+      // same bar the stored canonical board applies, so the tier list and this
+      // page agree about which units are itemised.
+      items: itemRate(r) >= BOARD_ITEM_RATE ? modalItemsFor(r.character_id) : [],
     };
   });
 
@@ -365,28 +391,36 @@ export async function getLineDetail(
     playRate: fieldTotal > 0 ? r.games / fieldTotal : 0,
   }));
 
-  const builds: DetailBuildVM[] = line.carries.map((id) => {
-    const meta = cat.unit(id);
-    const sets = carrySets.get(id) ?? [];
-    const total = sets.reduce((a, s) => a + s.boards, 0);
-    return {
-      characterId: meta.characterId,
-      name: meta.name,
-      cost: meta.cost,
-      iconUrl: meta.iconUrl,
-      sets: sets.slice(0, 4).map((s) => ({
-        items: s.items.map((it) => {
-          const m = cat.item(it);
-          return { itemId: it, name: m.name, iconUrl: m.iconUrl };
-        }),
-        boards: s.boards,
-        rate: total > 0 ? s.boards / total : 0,
-        avgPlacement: s.avg,
-      })),
-    };
-  });
+  // Every unit the page puts on a strip that its own players itemise — not the
+  // two the name mentions. Itemisation-rate order, so the real carries lead and
+  // the supports that happen to hold two items follow. Bounded to the strips
+  // because unitRows also carries the long tail: a 5-board cameo itemised every
+  // time clears the rate bar and has no business in this panel.
+  const builds: DetailBuildVM[] = units
+    .filter((u) => u.freq >= FLEX_AT && u.items.length > 0)
+    .sort((a, b) => (itemRates.get(b.characterId) ?? 0) - (itemRates.get(a.characterId) ?? 0)
+      || b.boards - a.boards)
+    .map((u) => {
+      const sets = itemSets.get(u.characterId) ?? [];
+      const total = sets.reduce((a, x) => a + x.boards, 0);
+      return {
+        characterId: u.characterId,
+        name: u.name,
+        cost: u.cost,
+        iconUrl: u.iconUrl,
+        sets: sets.slice(0, 4).map((x) => ({
+          items: x.items.map((it) => {
+            const m = cat.item(it);
+            return { itemId: it, name: m.name, iconUrl: m.iconUrl };
+          }),
+          boards: x.boards,
+          rate: total > 0 ? x.boards / total : 0,
+          avgPlacement: x.avg,
+        })),
+      };
+    });
 
-  const unitTraits = new Map(units.map((u) => [u.characterId, u]));
+  const unitStats = new Map(units.map((u) => [u.characterId, u]));
   const topBoards: DetailBoardVM[] = boardRows.map((r, i) => ({
     compId: -(i + 1), // synthetic: these are unit-sets within a line, not comps
     n: r.boards,
@@ -395,7 +429,7 @@ export async function getLineDetail(
       units: (r.units ?? [])
         .map((id) => {
           const u = cat.unit(id);
-          const stats = unitTraits.get(id);
+          const stats = unitStats.get(id);
           return {
             characterId: u.characterId,
             name: u.name,
@@ -411,21 +445,19 @@ export async function getLineDetail(
     },
   }));
 
-  const keyTraits = line.trait_id
-    ? (() => {
-        const meta = cat.trait(line.trait_id!);
-        const n = core.filter((u) => u.characterId).length;
-        return [
-          {
-            traitId: meta.traitId,
-            name: meta.name,
-            iconUrl: meta.iconUrl,
-            minUnits: n,
-            style: styleAtUnits(meta.breakpoints, n),
-          },
-        ];
-      })()
-    : [];
+  // TRAIT CHIPS COME FROM THE STORED CANONICAL BOARD, the same source the tier
+  // list row uses, so the two cannot disagree — and so the headline trait the
+  // name was built from is always among them. Deriving them from `trait_id`
+  // alone showed one chip carrying the count of the line's core units, which is
+  // how a Vanguard line came to advertise "6 Vanguard".
+  const exampleTeam = buildExampleTeam(line.example_board, cat, unitTraits);
+  const keyTraits = exampleTeam.traits.map((t) => ({
+    traitId: t.traitId,
+    name: t.name,
+    iconUrl: t.iconUrl,
+    minUnits: t.numUnits,
+    style: t.style,
+  }));
 
   return {
     selection: { patchId: line.patch_id, patch: line.patch, region, rankBucket: scope },

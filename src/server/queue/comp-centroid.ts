@@ -165,6 +165,32 @@ export function profileScore(board: ReadonlySet<string>, profile: readonly UnitR
   return union === 0 ? 0 : inter / union;
 }
 
+/** Rate at which a unit makes the line's CANONICAL BOARD — the board the site
+ *  renders for the line. Deliberately looser than CORE_RATE: the canonical board
+ *  is the typical one, which includes the flex slot its players usually fill,
+ *  not the union of everything anyone played. Elect stores that board and the
+ *  namer reads its traits off it, so the two must agree on the membership —
+ *  hence one constant rather than one per caller. */
+export const BOARD_MIN_RATE = num(process.env.ELECT_EX_UNIT_MIN_RATE, 0.5);
+
+/** A unit is shown at 3★ / with items on the canonical board when that is the
+ *  usual outcome for the players who FIELD it. The denominator is deliberately
+ *  the boards that fielded the unit, not every board in the line: measured
+ *  against the line, a 58%-flex unit can never clear the bar however
+ *  consistently its own players build it.
+ *
+ *  The read plane applies the same two bars when it decides which units carry
+ *  items on the detail page. Splitting them cost a bug report: the tier list
+ *  showed five itemised units from the stored board and the detail page showed
+ *  two, because the detail page asked only about the line's two named carries. */
+export const BOARD_STAR_RATE = num(process.env.ELECT_EX_STAR_MIN_RATE, 0.5);
+export const BOARD_ITEM_RATE = num(process.env.ELECT_EX_ITEM_MIN_RATE, 0.5);
+
+/** The line's canonical board, rate-descending (the profile's own order). */
+export function boardUnits(centroid: Centroid, at: number = BOARD_MIN_RATE): string[] {
+  return centroid.units.filter((u) => u.rate >= at).map((u) => u.characterId);
+}
+
 /** The units that make the line what it is (rate ≥ CORE_RATE). */
 export function coreUnits(centroid: Centroid, at: number = CORE_RATE): Set<string> {
   const out = new Set<string>();
@@ -401,56 +427,67 @@ export function isMarkerTrait(breakpoints: readonly TraitBreakpoint[] | undefine
 }
 
 /**
- * Expected count of each trait on a board of this line.
+ * Trait counts on the line's CANONICAL BOARD — the units it usually fields.
  *
- * Summing RATES, not counting core units. A line whose Executioners are one core
- * unit plus three flex ones is still an Executioner line, and counting only
- * units above CORE_RATE misses it — which is exactly how the Malphite lines
- * ended up named after a marker trait instead of their real vertical.
+ * Counting the board rather than summing the profile's rates is the difference
+ * between a name that describes the picture and one that contradicts it. Summing
+ * rates let a line whose profile held four Sprykin at 1.00/0.97/0.37/0.30 round
+ * to "3 Sprykin" and take the name, while the board it renders fields two and
+ * activates no Sprykin at all; it also named `Riftbeast Sivir Nidalee` a line
+ * whose board shows Riftbeast at its first breakpoint and Hunter at its second,
+ * because Hunter's 2.40 rounded down out of existence. The chips sit directly
+ * under the name, so the name has to be readable off them.
  */
-export function traitCounts(centroid: Centroid, statics: NameStatics): Map<string, number> {
+export function traitCounts(board: readonly string[], statics: NameStatics): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const { characterId, rate } of centroid.units) {
+  for (const characterId of board) {
     for (const t of statics.unitTraits.get(characterId) ?? []) {
-      counts.set(t, (counts.get(t) ?? 0) + rate);
+      counts.set(t, (counts.get(t) ?? 0) + 1);
     }
   }
   return counts;
 }
 
 /**
- * The line's headline trait, or null when it has none worth naming.
+ * The line's headline trait id, or null when its board activates none worth
+ * naming.
  *
  * Highest breakpoint style wins; ties go to the breakpoint that needed more
- * units, so a 3/3 beats a 2/2 and (with marker traits already excluded) a real
- * vertical always beats a splash.
+ * units, then to the trait with more units on the board. Last before the
+ * id fallback: a trait one of the NAMED CARRIES actually has. That only ever
+ * fires on an exact tie — a board with no real vertical, where every candidate
+ * sits at style 1 — and there "Inferno Elder Dragon Kennen" beats an
+ * alphabetical coin flip, because the reader can see why the words belong
+ * together.
  */
-export function headlineTrait(centroid: Centroid, statics: NameStatics): string | null {
-  let best: { id: string; style: number; minUnits: number; count: number } | null = null;
-  for (const [id, expected] of traitCounts(centroid, statics)) {
+export function headlineTrait(
+  board: readonly string[],
+  statics: NameStatics,
+  carries: readonly string[] = [],
+): string | null {
+  let best: { id: string; style: number; minUnits: number; count: number; carried: number } | null = null;
+  for (const [id, count] of traitCounts(board, statics)) {
     const bps = statics.traitBreakpoints.get(id);
     if (isMarkerTrait(bps)) continue;
-    const n = Math.round(expected);
     let reached: TraitBreakpoint | null = null;
     for (const b of [...bps!].sort((x, y) => x.minUnits - y.minUnits)) {
-      if (n >= b.minUnits) reached = b;
+      if (count >= b.minUnits) reached = b;
     }
     if (!reached) continue;
-    const cand = { id, style: reached.style, minUnits: reached.minUnits, count: expected };
-    if (
-      !best ||
-      cand.style > best.style ||
-      (cand.style === best.style && cand.minUnits > best.minUnits) ||
-      (cand.style === best.style && cand.minUnits === best.minUnits && cand.count > best.count) ||
-      (cand.style === best.style &&
-        cand.minUnits === best.minUnits &&
-        cand.count === best.count &&
-        cand.id < best.id)
-    ) {
+    const carried = carries.filter((c) => (statics.unitTraits.get(c) ?? []).includes(id)).length;
+    const cand = { id, style: reached.style, minUnits: reached.minUnits, count, carried };
+    const rank = (x: typeof cand) => [x.style, x.minUnits, x.count, x.carried];
+    if (!best) {
       best = cand;
+      continue;
     }
+    const a = rank(cand);
+    const b = rank(best);
+    let i = 0;
+    while (i < a.length && a[i] === b[i]) i++;
+    if (i === a.length ? cand.id < best.id : a[i] > b[i]) best = cand;
   }
-  return best ? (statics.traitNames.get(best.id) ?? best.id) : null;
+  return best ? best.id : null;
 }
 
 /** How often each unit of a line was itemised, as a share of the boards that
@@ -483,12 +520,16 @@ export function nameCarries(
     .sort((a, b) => b.rate - a.rate || b.boards - a.boards || (a.characterId < b.characterId ? -1 : 1))
     .slice(0, limit);
 
-  // PICKED by itemisation rate, RENDERED in a canonical order. Those are
-  // different jobs: rate says which units carry the line, but letting it also
-  // decide word order makes two lines with the same carries read as different
-  // names — observed as "Solar Akali Camille" beside "Solar Camille Akali",
-  // which the collision resolver never saw because the strings differed. Cost
-  // descending also matches how a player would say it.
+  // PICKED by itemisation rate, ORDERED canonically. Those are different jobs:
+  // rate says which units carry the line, but letting it also decide word order
+  // makes two lines with the same carries read as different names — observed as
+  // "Solar Akali Camille" beside "Solar Camille Akali", which the collision
+  // resolver never saw because the strings differed. Cost descending also
+  // matches how a player would say it.
+  //
+  // Character IDS, not display names: two units in a set can share a display
+  // name (an AP and an AD Nidalee), and the caller needs the id to draw a
+  // portrait. Rendering is renderName's job.
   return picked
     .slice()
     .sort(
@@ -498,19 +539,35 @@ export function nameCarries(
           statics.unitNames.get(b.characterId) ?? b.characterId,
         ),
     )
-    .map((i) => statics.unitNames.get(i.characterId) ?? i.characterId);
+    .map((i) => i.characterId);
 }
 
-/** `<trait> <carry> <carry>`, e.g. "Executioner Malphite Ahri". The trait is
- *  dropped when the line has none worth naming (never observed in set 18 — every
- *  elected line activates something — but a set with fewer traits could). */
+/** A line's name before it is a string: the headline trait and the carries, by
+ *  id. Kept apart from the rendered form because collision resolution rebuilds
+ *  a name from its parts rather than editing the string. */
+export interface CentroidName {
+  traitId: string | null;
+  carryIds: string[];
+}
+
+/** `<trait> <carry> <carry>`, e.g. "Executioner Malphite Ahri" — named off the
+ *  line's canonical board, so the trait is always one the rendered board shows
+ *  as active. The trait is dropped when the board activates none worth naming. */
 export function nameCentroid(
   centroid: Centroid,
+  board: readonly string[],
   itemisation: readonly ItemisationRate[],
   statics: NameStatics,
-): string {
-  const trait = headlineTrait(centroid, statics);
-  return [trait, ...nameCarries(centroid, itemisation, statics)].filter(Boolean).join(' ');
+): CentroidName {
+  const carryIds = nameCarries(centroid, itemisation, statics);
+  return { traitId: headlineTrait(board, statics, carryIds), carryIds };
+}
+
+export function renderName(name: CentroidName, statics: NameStatics): string {
+  const trait = name.traitId ? (statics.traitNames.get(name.traitId) ?? name.traitId) : null;
+  return [trait, ...name.carryIds.map((id) => statics.unitNames.get(id) ?? id)]
+    .filter(Boolean)
+    .join(' ');
 }
 
 /**
@@ -559,39 +616,68 @@ function differentiatingUnit(
   )[0].characterId;
 }
 
-/**
- * Disambiguate lines that generated the same name.
- *
- * Colliding lines are genuinely different — the four `Malphite Ahri` lookalikes
- * sat at 0.29–0.57 core Jaccard, and one of them placed 1.9 better than another
- * — so the fix is to say what differs, not to merge them. Each collider appends
- * its distinguishing unit (see `differentiatingUnit`); that is deterministic from
- * the profiles alone, unlike the old `##k:<compId>` suffix, which churned
- * whenever membership was rebuilt and 404'd every shared link.
- *
- * Returns names positionally aligned with `centroids`.
- */
-export function resolveNameCollisions(
-  names: readonly string[],
-  centroids: readonly Centroid[],
-  statics: NameStatics,
-): string[] {
+/** Positions of every name that more than one line rendered to. */
+function duplicateGroups(names: readonly string[]): number[][] {
   const byName = new Map<string, number[]>();
   names.forEach((n, i) => {
     const arr = byName.get(n);
     if (arr) arr.push(i);
     else byName.set(n, [i]);
   });
+  return [...byName.values()].filter((g) => g.length > 1);
+}
 
-  const out = [...names];
-  for (const [, idxs] of byName) {
-    if (idxs.length < 2) continue;
-    idxs.forEach((i, k) => {
-      const others = idxs.filter((_, j) => j !== k).map((j) => centroids[j]);
-      const pick = differentiatingUnit(centroids[i], others, statics);
-      if (pick === null) return; // indistinguishable profiles: nothing honest to add
-      out[i] = `${names[i]} ${statics.unitNames.get(pick) ?? pick}`;
-    });
+/**
+ * Disambiguate lines that rendered the same name.
+ *
+ * Colliding lines are genuinely different — the four `Malphite Ahri` lookalikes
+ * sat at 0.29–0.57 core Jaccard, and one of them placed 1.9 better than another
+ * — so the fix is to say what differs, not to merge them. Each collider takes
+ * its distinguishing unit (see `differentiatingUnit`), which is deterministic
+ * from the profiles alone, unlike the old `##k:<compId>` suffix that churned
+ * whenever membership was rebuilt and 404'd every shared link.
+ *
+ * TWO PASSES, and the order is the point. The scheme is trait + two units, so
+ * the first pass SUBSTITUTES: the colliders share both carries by definition, so
+ * the second one carries no information here and the differentiator takes its
+ * slot. Three of the four `Sprykin Veigar Rek'Sai …` lines become
+ * `Sprykin Veigar Tristana` / `… Sett` / `… Cassiopeia`, which is the same
+ * statement in the shape the naming scheme promises.
+ *
+ * Substitution can collide again, because two lines whose differentiators came
+ * from different groups can land on the same pair. The second pass APPENDS to
+ * the full carry list for that residue only — a three-unit name is worse than a
+ * two-unit one, but both are better than two lines sharing a name in a list.
+ *
+ * Returns names positionally aligned with `names`.
+ */
+export function resolveNameCollisions(
+  names: readonly CentroidName[],
+  centroids: readonly Centroid[],
+  statics: NameStatics,
+): string[] {
+  const out = names.map((n) => renderName(n, statics));
+
+  for (const mode of ['substitute', 'append'] as const) {
+    for (const group of duplicateGroups(out)) {
+      for (const i of group) {
+        const others = group.filter((j) => j !== i).map((j) => centroids[j]);
+        const pick = differentiatingUnit(centroids[i], others, statics);
+        // Null: profiles convergence should already have collapsed. Already
+        // named: the differentiator is one of this line's own carries, so
+        // repeating it would say nothing. Either way there is nothing honest to
+        // add, and a shared name is the truthful outcome.
+        if (pick === null || names[i].carryIds.includes(pick)) continue;
+        const kept =
+          mode === 'substitute'
+            ? names[i].carryIds.slice(0, Math.max(1, names[i].carryIds.length - 1))
+            : names[i].carryIds;
+        // The differentiator goes LAST, not into cost order: it is a qualifier
+        // on the line the first carry names, and reordering it to the front
+        // ("Sprykin Sett Veigar") would bury the carry the line is about.
+        out[i] = renderName({ traitId: names[i].traitId, carryIds: [...kept, pick] }, statics);
+      }
+    }
   }
   return out;
 }
