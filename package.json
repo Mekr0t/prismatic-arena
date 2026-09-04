@@ -11,6 +11,7 @@
     "patch:open": "tsx scripts/patch-open.ts",
     "data:load": "tsx scripts/load-static-data.ts",
     "worker": "tsx src/server/queue/worker.ts",
+    "worker:now": "tsx scripts/worker-now.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "tsx --test \"src/**/*.test.ts\"",

@@ -65,6 +65,14 @@ scripts/
                          canonicalEntry), shared by the loader and the readiness
                          checker so they cannot disagree — the loader self-runs
                          on import, so nothing can import the threshold from it
+  worker-now.ts          `npm run worker:now` — starts the worker AND kicks the
+                         pipeline head immediately, instead of waiting out
+                         SCHED_PIPELINE_MIN. A file rather than an inline env
+                         prefix because the prefix form differs per shell
+                         (`RUN_CLUSTER=1 npm run worker` is a parse error in
+                         PowerShell); this works in both and adds no dependency.
+                         Only the HEAD is kicked — the chain advances the rest,
+                         so it runs the real path, not a special one.
   patch-open.ts          Declares that a new patch has started — the ONLY way a
                          patch boundary enters the system now that TFT on Unreal
                          carries no version and follows no release train. Writes
