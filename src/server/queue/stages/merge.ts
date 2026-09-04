@@ -24,6 +24,7 @@
 import type { PoolClient } from 'pg';
 import { pool } from '@/lib/db';
 import type { JobContext } from '../job-tracking';
+import { activeSets } from '../active-sets';
 import { buildCompProfile, buildTailProfile } from '../comp-profile';
 import { mergeComps, makeTailAssigner, type CompProfile } from '../comp-merge';
 import { emblemsFromSignature } from '../comp-signature';
@@ -400,12 +401,29 @@ export async function loadTailProfiles(
 export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
   const client = await pool.connect();
   try {
-    const shared = await loadMergeStatic(client, job.setNumber);
-    const floored = await loadCompProfiles(client, job.setNumber, shared);
+    // SKIP FROZEN SETS. Merge is a full re-derivation and its cost scales with
+    // comp count; measured 2026-09-04 it processed 258,331 set-17 comps out of
+    // 420,345 on every pass, for a set that had not received a board since set
+    // 18 launched, and the pass took 1,162 s.
+    //
+    // Deliberately conservative: it narrows only when there is EXACTLY ONE
+    // active set. Merge takes a single setNumber and its label-clearing is
+    // scoped by it, so with two active sets — a rollover — narrowing to one
+    // would freeze the other's labels while its comps were still moving.
+    // Falling back to every set there is the safe direction, and rollovers are
+    // rare and short.
+    const active = job.setNumber === undefined ? await activeSets(client) : [];
+    const setNumber = job.setNumber ?? (active.length === 1 ? active[0] : undefined);
+    if (setNumber !== undefined && job.setNumber === undefined) {
+      console.log(`[merge] scoped to the one active set (${setNumber})`);
+    }
+
+    const shared = await loadMergeStatic(client, setNumber);
+    const floored = await loadCompProfiles(client, setNumber, shared);
     // Mid-tier presence profiles join the real merge (see MERGE_SEED_MIN_TOTAL).
     const mid = await loadTailProfiles(
       client,
-      job.setNumber,
+      setNumber,
       { minTotal: MERGE_SEED_MIN_TOTAL },
       shared,
     );
@@ -430,7 +448,7 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
     // Frozen archetype profiles, so order doesn't matter and nothing dilutes.
     const tail = await loadTailProfiles(
       client,
-      job.setNumber,
+      setNumber,
       { maxTotal: MERGE_SEED_MIN_TOTAL },
       shared,
     );
@@ -464,7 +482,11 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
           WHERE ($1::int IS NULL OR set_number = $1)
             AND meta_comp IS NOT NULL
             AND id NOT IN (SELECT unnest($2::int[]))`,
-        [job.setNumber ?? null, ids],
+        // MUST be the same scope the merge ran over. A clear wider than the
+        // run nulls the labels of every comp it did not look at — narrowing the
+        // merge to one set while clearing all of them would wipe the frozen
+        // set's labels wholesale, and the tier list with them.
+        [setNumber ?? null, ids],
       );
       if (ids.length > 0) {
         await client.query(
@@ -487,7 +509,7 @@ export async function runMerge(job: MergeJob, ctx: JobContext): Promise<void> {
     console.log(
       `[merge] ${floored.length} floored + ${mid.length} mid-tier → ${archetypes.size} archetypes; ` +
       `singles: ${tailAssigned}/${tail.length} assigned` +
-      (job.setNumber ? ` (set ${job.setNumber})` : ''),
+      (setNumber ? ` (set ${setNumber})` : ''),
     );
   } finally {
     client.release();

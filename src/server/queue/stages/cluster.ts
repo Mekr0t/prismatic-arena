@@ -34,6 +34,7 @@
 import { pool } from '@/lib/db';
 import type { PoolClient } from 'pg';
 import type { JobContext } from '../job-tracking';
+import { activeSets, ACTIVE_SET_DAYS } from '../active-sets';
 import { buildIdentity, isEmblemItem, type SigUnit } from '../comp-signature';
 import { RANKED_TFT_QUEUE_ID } from '@/config/queue-ids';
 
@@ -57,37 +58,8 @@ const SCAN_CHUNK = envInt(process.env.CLUSTER_SCAN_CHUNK, 25_000);
 // negligible, small enough to keep any single statement's parameter arrays sane.
 const WRITE_CHUNK = envInt(process.env.CLUSTER_WRITE_CHUNK, 5_000);
 
-/**
- * A set with no match ingested in this many days is FROZEN and skipped.
- *
- * Clustering is a full re-derivation, and re-deriving a set nobody is crawling
- * produces byte-identical output at full cost. Measured 2026-09-04: the sweep
- * covered 775,608 boards of which 513,288 were set 17 — two thirds of every pass
- * spent rebuilding a set that had not received a board since set 18 launched,
- * and cluster had grown to 247 s average and 1,034 s at worst.
- *
- * Keyed on RECENT INGEST rather than on "the live set" so it needs no
- * configuration and no set-rollover handling: a set drops out on its own when
- * the crawler stops feeding it, and comes back on its own if it is ever
- * backfilled. A frozen set keeps its stamps and its comps untouched — the clear
- * and the prune are scoped to the same set list — so `comp_stats` still rebuilds
- * for it from the stamps it already has and its patches keep serving.
- */
-const ACTIVE_SET_DAYS = envInt(process.env.CLUSTER_ACTIVE_DAYS, 7);
-
-/** Sets that have received a board recently, newest first. Empty means the data
- *  is older than the window, in which case the sweep falls back to every set
- *  rather than doing nothing. */
-async function activeSets(client: PoolClient): Promise<number[]> {
-  const res = await client.query<{ set_number: number }>(
-    `SELECT DISTINCT set_number FROM matches
-      WHERE set_number IS NOT NULL
-        AND ingested_at > now() - make_interval(days => $1::int)
-      ORDER BY set_number DESC`,
-    [ACTIVE_SET_DAYS],
-  );
-  return res.rows.map((r) => r.set_number);
-}
+// Frozen sets are skipped — see queue/active-sets.ts for why, and for the
+// measurement that motivated it.
 
 interface PartRow {
   id: string; // bigint -> string over the wire
@@ -353,7 +325,7 @@ export async function runCluster(job: ClusterJob, ctx: JobContext): Promise<void
     const active = job.setNumber === undefined ? await activeSets(client) : null;
     const activeOnly = active && active.length > 0 ? active : null;
     if (activeOnly) {
-      console.log(`[cluster] active set(s) in the last ${ACTIVE_SET_DAYS}d: ${activeOnly.join(', ')}`);
+      console.log(`[cluster] active set(s) in the last ${ACTIVE_SET_DAYS()}d: ${activeOnly.join(', ')}`);
     }
     const scan = await scanBoards(client, job.setNumber, activeOnly, ctx);
     if (scan.boardsScanned === 0) {
